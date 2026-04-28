@@ -154,7 +154,7 @@ fn finish_setup(address: Address) -> Result<()> {
         Some(proxy) => {
             println!("  ✓ Proxy wallet derived");
             println!("    Proxy: {proxy}");
-            println!("    Deposit USDC to this address to start trading.");
+            println!("    Deposit pUSD to this address to start trading.");
         }
         None => {
             println!("  ✗ Could not derive proxy wallet");
@@ -167,9 +167,9 @@ fn finish_setup(address: Address) -> Result<()> {
     step_header(3, total, "Fund Wallet");
 
     let deposit_addr = proxy.unwrap_or(address);
-    println!("  ○ Deposit USDC to your wallet to start trading");
+    println!("  ○ Deposit pUSD to your wallet to start trading");
     println!("    Run: polymarket bridge deposit {deposit_addr}");
-    println!("    Or transfer USDC directly on Polygon");
+    println!("    Or transfer pUSD directly on Polygon");
 
     println!();
 

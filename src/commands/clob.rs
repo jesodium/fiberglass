@@ -244,7 +244,7 @@ pub enum ClobCommand {
         /// Side: buy or sell
         #[arg(long)]
         side: CliSide,
-        /// Amount (USDC for buys, shares for sells)
+        /// Amount (pUSD for buys, shares for sells)
         #[arg(long)]
         amount: String,
         /// Order type: FOK or FAK (default: FOK)

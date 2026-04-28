@@ -291,7 +291,7 @@ pub fn print_activity(activity: &[Activity], output: &OutputFormat) -> anyhow::R
                 price: String,
                 #[tabled(rename = "Size")]
                 size: String,
-                #[tabled(rename = "USDC")]
+                #[tabled(rename = "Collateral")]
                 usdc_size: String,
                 #[tabled(rename = "Tx")]
                 tx: String,

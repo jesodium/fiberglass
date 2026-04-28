@@ -58,7 +58,7 @@ pub fn print_balance(
     is_collateral: bool,
     output: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let divisor = Decimal::from(10u64.pow(crate::commands::USDC_DECIMALS));
+    let divisor = Decimal::from(10u64.pow(crate::commands::COLLATERAL_DECIMALS));
     let human_balance = result.balance / divisor;
     match output {
         OutputFormat::Table => {
