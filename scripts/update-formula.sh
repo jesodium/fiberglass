@@ -7,7 +7,7 @@ set -euo pipefail
 TAG="${1:?Usage: $0 <version-tag>  (e.g. v0.1.0)}"
 VERSION="${TAG#v}"  # strip leading 'v'
 
-REPO="Polymarket/polymarket-cli"
+REPO="jesodium/polymarket-cli"
 CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/checksums.txt"
 FORMULA="Formula/polymarket.rb"
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="Polymarket/polymarket-cli"
+REPO="jesodium/polymarket-cli"
 BINARY="polymarket"
 INSTALL_DIR="/usr/local/bin"
 

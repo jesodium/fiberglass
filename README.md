@@ -9,20 +9,20 @@ Rust CLI for Polymarket. Browse markets, place orders, manage positions, and int
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew tap Polymarket/polymarket-cli https://github.com/Polymarket/polymarket-cli
+brew tap jesodium/polymarket-cli https://github.com/jesodium/polymarket-cli
 brew install polymarket
 ```
 
 ### Shell script
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Polymarket/polymarket-cli/main/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/jesodium/polymarket-cli/main/install.sh | sh
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/Polymarket/polymarket-cli
+git clone https://github.com/jesodium/polymarket-cli
 cd polymarket-cli
 cargo install --path .
 ```
@@ -98,6 +98,9 @@ Most commands work without a wallet — browsing markets, viewing order books, c
 - Checking your balances and trades (`clob balance`, `clob trades`, `clob orders`)
 - On-chain operations (`approve set`, `ctf split/merge/redeem`)
 - Reward and API key management (`clob rewards`, `clob create-api-key`)
+
+Paper trading (`polymarket paper ...`) needs no wallet at all — see
+[Paper Trading](#paper-trading-simulated-no-wallet-needed).
 
 ## Output Formats
 
@@ -276,6 +279,67 @@ polymarket clob update-balance --asset-type collateral
 ```
 
 **Order types**: `GTC` (default), `FOK`, `GTD`, `FAK`. Add `--post-only` for limit orders.
+
+### Paper Trading (simulated, no wallet needed)
+
+Practice trading with a virtual balance against live Polymarket prices. Paper
+trading is fully isolated from your wallet and the live exchange — no keys,
+no signing, no real funds.
+
+```bash
+# Turn on paper mode (creates a $10,000 virtual account the first time)
+polymarket paper enable
+
+# Simulated market buy: spend $100 at the current best asks
+polymarket paper buy 48331043336612883... --amount 100
+
+# Simulated limit buy: rests until the market crosses your price
+polymarket paper buy 48331043336612883... --price 0.45 --size 50
+
+# Simulated sells: market by default, limit with --price
+polymarket paper sell 48331043336612883... --size 50
+polymarket paper sell 48331043336612883... --size 50 --price 0.80
+
+# Portfolio: cash, positions, realized/unrealized PnL, ROI
+polymarket paper portfolio
+
+# Resting limit orders (filled automatically when the market crosses)
+polymarket paper orders
+polymarket paper cancel ORDER_ID
+
+# Trade log and performance analytics
+polymarket paper history
+polymarket paper stats          # win rate, best/worst trade, daily PnL, equity curve
+
+# Manage the account
+polymarket paper status
+polymarket paper reset --balance 25000   # start over with a custom balance
+polymarket paper disable                 # back to live trading (data is kept)
+```
+
+While paper mode is enabled, `clob create-order` and `clob market-order`
+route to the simulator automatically (a `[paper]` notice is printed). You can
+also force a single simulated order without toggling the mode:
+
+```bash
+polymarket clob market-order --token 48331043336612883... --side buy --amount 5 --paper
+polymarket clob create-order --token 48331043336612883... --side buy --price 0.50 --size 10 --paper
+```
+
+**How fills are simulated**
+
+- Market orders walk the live order book level by level, so large orders pay
+  realistic slippage. If the book can't absorb the full size, the order is
+  rejected (fill-or-kill).
+- Limit orders that cross the market fill immediately at the touch (with
+  price improvement if your limit is better). Otherwise they rest, reserving
+  cash (buys) or shares (sells), and fill at your limit price once any paper
+  command observes the market crossing it.
+- Positions track average entry price; realized PnL is computed per sell
+  against that average.
+
+Paper data persists in `~/.config/polymarket/paper_account.json` (override
+with `POLYMARKET_PAPER_FILE`). Wallet commands never touch it.
 
 ### Rewards & API Keys (CLOB, authenticated)
 
