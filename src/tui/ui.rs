@@ -243,13 +243,13 @@ fn markets(f: &mut Frame, app: &App, area: Rect) {
             let yes = m
                 .prices
                 .first()
-                .map(|p| format!("{p:.3}"))
+                .map(|p| pct(*p))
                 .unwrap_or_else(|| "—".into());
             Row::new(vec![
                 Cell::from(truncate(&m.question, 52)),
                 Cell::from(yes).style(Style::default().fg(GOOD)),
-                Cell::from(opt_money(m.volume)),
-                Cell::from(opt_money(m.liquidity)),
+                Cell::from(short_money(m.volume)),
+                Cell::from(short_money(m.liquidity)),
                 Cell::from(status_label(m.closed, m.active)),
             ])
             .style(zebra(i))
@@ -276,7 +276,7 @@ fn markets(f: &mut Frame, app: &App, area: Rect) {
     )
     .header(header_row(&[
         "Market",
-        "Yes",
+        "Yes %",
         "Volume",
         "Liquidity",
         "Status",
@@ -322,7 +322,7 @@ fn market_detail(f: &mut Frame, app: &App, area: Rect) {
         let price = d
             .prices
             .get(i)
-            .map(|p| format!("{p:.3}"))
+            .map(|p| pct(*p))
             .unwrap_or_else(|| "—".into());
         let marker = if i == app.detail_token { "▶ " } else { "  " };
         let style = if i == app.detail_token {
@@ -1112,8 +1112,15 @@ fn signed_money(d: Decimal) -> String {
     }
 }
 
-fn opt_money(d: Option<Decimal>) -> String {
-    d.map(money).unwrap_or_else(|| "—".into())
+/// Compact money with K/M/B suffixes, e.g. `$2.9M` (reuses the CLI formatter).
+fn short_money(d: Option<Decimal>) -> String {
+    d.map(crate::output::format_decimal)
+        .unwrap_or_else(|| "—".into())
+}
+
+/// A probability (0..1) as a percentage, e.g. `0.004 → 0.4%`, `0.612 → 61.2%`.
+fn pct(p: Decimal) -> String {
+    format!("{:.1}%", p * Decimal::from(100))
 }
 
 fn status_label(closed: Option<bool>, active: Option<bool>) -> String {
