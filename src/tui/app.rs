@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polymarket_client_sdk_v2::types::Decimal;
 
 use super::data::{MarketRow, Shared};
@@ -206,6 +206,15 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        // Always-available exit: Ctrl+C / Ctrl+Q work everywhere, including
+        // inside modals and the search box (raw mode swallows the default
+        // Ctrl+C, so we handle it ourselves).
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q'))
+        {
+            self.should_quit = true;
+            return;
+        }
         // Modals capture all input first.
         if self.modal.is_some() {
             self.modal_key(key);
@@ -235,7 +244,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => {
-                self.status = "Tab/1-9 switch views · ↑↓/jk move · Enter open · b/s order · c cancel · g attach strat · q quit".to_string();
+                self.status = "Tab/1-9 switch views · ↑↓/jk move · Enter open · b/s order · c cancel · g attach strat · q or Ctrl+C quit".to_string();
             }
             KeyCode::Tab => self.cycle_tab(1),
             KeyCode::BackTab => self.cycle_tab(-1),

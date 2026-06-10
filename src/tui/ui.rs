@@ -126,7 +126,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         View::Orders => "↑↓ move · c cancel · Tab views",
         View::Strategies => "n new · s start · x stop · e enable · d disable · ↑↓ move",
         View::Settings => "Mode is fixed at launch (--paper) · Tab views",
-        _ => "Tab/1-9 switch views · ↑↓ move · ? help · q quit",
+        _ => "Tab/1-9 switch views · ↑↓ move · ? help · q or Ctrl+C quit",
     };
     let mc = mode_color(app);
     let lines = vec![
