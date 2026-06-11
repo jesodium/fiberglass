@@ -12,7 +12,8 @@ use ratatui::widgets::{
 };
 
 use super::app::{
-    App, ModalField, OrderModal, ResetModal, SETTING_ROWS, SettingRow, SettingsEditModal, View,
+    App, COPY_FIELDS, CopyField, CopyModal, ModalField, OrderModal, ResetModal, SETTING_ROWS,
+    SettingRow, SettingsEditModal, View,
 };
 use crate::paper::engine;
 use crate::paper::types::{OrderKind, TradeSide};
@@ -62,6 +63,7 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         View::Orders => orders(f, app, chunks[1]),
         View::History => history(f, app, chunks[1]),
         View::Strategies => strategies(f, app, chunks[1]),
+        View::Copytrade => copytrade(f, app, chunks[1]),
         View::Logs => logs(f, app, chunks[1]),
         View::Settings => settings(f, app, chunks[1]),
     }
@@ -72,6 +74,9 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
     }
     if let Some(sm) = &app.strat_modal {
         render_strat_modal(f, sm);
+    }
+    if let Some(cm) = &app.copy_modal {
+        render_copy_modal(f, cm);
     }
     if let Some(rm) = &app.reset_modal {
         render_reset_modal(f, rm);
@@ -132,7 +137,12 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         View::Markets => "↑↓/jk move · Enter open · / search · Tab views · q quit",
         View::MarketDetail => "←→ outcome · b buy · s sell · g attach strategy · Esc back",
         View::Orders => "↑↓ move · c cancel · Tab views",
-        View::Strategies => "n new · s start · x stop · e enable · d disable · D delete · ↑↓ move",
+        View::Strategies => {
+            "n new · m modify · s start · x stop · e enable · d disable · D delete · ↑↓ move"
+        }
+        View::Copytrade => {
+            "n follow · s start · x stop · e enable · d disable · D unfollow · ↑↓ move"
+        }
         View::Settings => {
             "↑↓ move · Enter edit/cycle · w reveal key · r reset paper account · Tab views"
         }
@@ -166,6 +176,7 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
     let open_orders = acct.open_orders.len();
     drop(acct);
     let running = app.engine.running_count();
+    let following = app.copy_engine.running_count();
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -206,6 +217,7 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
         kv_line("Open Positions", &positions.to_string()),
         kv_line("Open Orders", &open_orders.to_string()),
         kv_line("Running Strategies", &running.to_string()),
+        kv_line("Copy Followers", &following.to_string()),
         kv_line("ROI", &format!("{}%", view.roi_pct)),
         kv_line("Realized PnL", &signed_money(view.realized_pnl)),
         kv_line("Unrealized PnL", &signed_money(view.unrealized_pnl)),
@@ -807,7 +819,7 @@ fn strategies(f: &mut Frame, app: &App, area: Rect) {
         "Last Action",
     ]))
     .block(panel(&format!(
-        "Strategies — {} mode, {}s tick (n new · s start · x stop · e enable · d disable · D delete)",
+        "Strategies — {} mode, {}s tick (n new · m modify · s start · x stop · e enable · d disable · D delete)",
         app.engine.mode(),
         app.engine.tick_secs()
     )))
@@ -832,6 +844,128 @@ fn strategies(f: &mut Frame, app: &App, area: Rect) {
             .wrap(Wrap { trim: true }),
         layout[1],
     );
+}
+
+// --- Copytrade -------------------------------------------------------------
+
+fn copytrade(f: &mut Frame, app: &App, area: Rect) {
+    let snap = app.copy_engine.snapshot();
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(6), Constraint::Length(8)])
+        .split(area);
+
+    let rows: Vec<Row> = snap
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let (state, color) = if s.running {
+                ("● running", GOOD)
+            } else if s.enabled {
+                ("○ idle", GOLD)
+            } else {
+                ("· disabled", DIM)
+            };
+            Row::new(vec![
+                Cell::from(s.id.clone()),
+                Cell::from(truncate(&s.nickname, 16)),
+                Cell::from(short_wallet(&s.wallet)),
+                Cell::from(state).style(Style::default().fg(color)),
+                Cell::from(s.copied.to_string()),
+                Cell::from(s.skipped.to_string()),
+                Cell::from(s.errors.to_string()).style(Style::default().fg(if s.errors > 0 {
+                    BAD
+                } else {
+                    DIM
+                })),
+                Cell::from(s.last_action.clone().unwrap_or_else(|| "-".into())),
+            ])
+            .style(zebra(i))
+        })
+        .collect();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(14),
+            Constraint::Length(16),
+            Constraint::Length(13),
+            Constraint::Length(11),
+            Constraint::Length(7),
+            Constraint::Length(8),
+            Constraint::Length(7),
+            Constraint::Min(14),
+        ],
+    )
+    .header(header_row(&[
+        "ID",
+        "Nickname",
+        "Wallet",
+        "State",
+        "Copied",
+        "Skipped",
+        "Errors",
+        "Last Action",
+    ]))
+    .block(panel(&format!(
+        "Copy Trading — {} mode, {}s poll (n follow · s start · x stop · e enable · d disable · D unfollow)",
+        app.copy_engine.mode(),
+        app.copy_engine.interval()
+    )))
+    .row_highlight_style(highlight())
+    .highlight_symbol("▶ ");
+    f.render_stateful_widget(
+        table,
+        layout[0],
+        &mut sel_state(app.copytrade_sel, snap.len()),
+    );
+
+    // Recent copy-trading activity (this tab has no separate logs view).
+    let logs = app.copy_engine.recent_logs(6);
+    let items: Vec<ListItem> = if snap.is_empty() {
+        vec![ListItem::new(
+            "Not following anyone yet. Press n to follow a wallet's trades.".fg(DIM),
+        )]
+    } else {
+        logs.iter()
+            .map(|l| {
+                use crate::strategy::engine::LogLevel;
+                let color = match l.level {
+                    LogLevel::Trade => GOOD,
+                    LogLevel::Warn => Color::Yellow,
+                    LogLevel::Error => BAD,
+                    LogLevel::Info => DIM,
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{} ", l.time.format("%H:%M:%S")),
+                        Style::default().fg(DIM),
+                    ),
+                    Span::styled(
+                        format!("{:<5} ", l.level.label()),
+                        Style::default().fg(color),
+                    ),
+                    Span::styled(
+                        format!("{:<14} ", truncate(&l.source, 14)),
+                        Style::default().fg(ACCENT),
+                    ),
+                    Span::raw(l.message.clone()),
+                ]))
+            })
+            .collect()
+    };
+    f.render_widget(
+        List::new(items).block(panel("Recent Copy Activity")),
+        layout[1],
+    );
+}
+
+/// `0x1234…cdef` short form for the wallet column.
+fn short_wallet(wallet: &str) -> String {
+    let w = wallet.trim();
+    if w.len() <= 12 {
+        return w.to_string();
+    }
+    format!("{}…{}", &w[..6], &w[w.len() - 4..])
 }
 
 // --- Logs ------------------------------------------------------------------
@@ -1146,36 +1280,107 @@ fn render_modal(f: &mut Frame, app: &App, m: &OrderModal) {
 }
 
 fn render_strat_modal(f: &mut Frame, m: &super::app::StratModal) {
-    let area = centered_rect(60, 14, f.area());
-    f.render_widget(Clear, area);
     let avail = crate::strategy::registry::available();
     let cur = avail.get(m.kind_idx);
+    let editing = m.editing.is_some();
 
-    let mut kind_spans = vec![Span::raw("Strategy: ")];
+    // Kind row (focus 0): locked when editing an existing strategy.
+    let mut kind_spans = vec![Span::styled(
+        "Strategy: ",
+        if m.focus == 0 {
+            Style::default().fg(ACCENT).bold()
+        } else {
+            Style::default().fg(DIM)
+        },
+    )];
     for (i, meta) in avail.iter().enumerate() {
         kind_spans.push(toggle_span(meta.kind, i == m.kind_idx));
         kind_spans.push(Span::raw(" "));
     }
-    kind_spans.push(Span::styled("(←→)", Style::default().fg(DIM)));
+    kind_spans.push(Span::styled(
+        if editing { "(locked)" } else { "(←→)" },
+        Style::default().fg(DIM),
+    ));
 
     let summary = cur.map(|m| m.summary).unwrap_or("");
-    let lines = vec![
-        Line::from("Create a local strategy".bold()),
+    let mut lines = vec![
+        Line::from(if editing {
+            "Edit strategy parameters".bold()
+        } else {
+            "Create a local strategy".bold()
+        }),
         Line::from(""),
         Line::from(kind_spans),
         Line::from(Span::styled(summary, Style::default().fg(DIM))),
         Line::from(""),
-        field_line("Token IDs (csv)", &m.tokens, true),
-        Line::from(""),
-        match &m.error {
-            Some(e) => Line::from(Span::styled(e.clone(), Style::default().fg(BAD))),
-            None => Line::from("Tip: open a market and press g to grab its token ID.".fg(DIM)),
-        },
-        Line::from("←→ pick strategy · Enter create & start · Esc cancel".fg(DIM)),
+        field_line("Token IDs (csv)", &m.tokens, m.focus == 1),
     ];
+    // One editable line per parameter (focus 2..).
+    for (i, p) in m.params.iter().enumerate() {
+        lines.push(field_line(&p.key, &p.value, m.focus == i + 2));
+    }
+    lines.push(Line::from(""));
+    lines.push(match &m.error {
+        Some(e) => Line::from(Span::styled(e.clone(), Style::default().fg(BAD))),
+        None => Line::from(
+            "Blank an optional value to turn it off · Enter on a number/text field is fine".fg(DIM),
+        ),
+    });
+    lines.push(Line::from(
+        "↑↓ move · ←→ kind · type to edit · Enter save · Esc cancel".fg(DIM),
+    ));
+
+    // Size the modal to fit the content (kind + tokens + params + chrome).
+    let height = (lines.len() as u16 + 2).clamp(12, f.area().height.saturating_sub(2));
+    let area = centered_rect(64, height, f.area());
+    f.render_widget(Clear, area);
+    let title = if editing {
+        " EDIT STRATEGY "
+    } else {
+        " NEW STRATEGY "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" NEW STRATEGY ".bold())
+        .title(title.bold())
+        .border_style(Style::default().fg(ACCENT));
+    f.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_copy_modal(f: &mut Frame, m: &CopyModal) {
+    let value = |field: CopyField| -> String {
+        match field {
+            CopyField::Wallet => m.wallet.clone(),
+            CopyField::Nickname => m.nickname.clone(),
+            CopyField::Size => m.size.clone(),
+            CopyField::MaxDollar => m.max_dollar.clone(),
+            CopyField::MinPrice => m.min_price.clone(),
+            CopyField::MaxPrice => m.max_price.clone(),
+            CopyField::Slippage => m.slippage.clone(),
+            CopyField::MirrorSells => if m.mirror_sells { "yes" } else { "no" }.to_string(),
+        }
+    };
+    let mut lines = vec![Line::from("Follow a wallet".bold()), Line::from("")];
+    for (i, field) in COPY_FIELDS.iter().enumerate() {
+        lines.push(field_line(field.label(), &value(*field), m.focus == i));
+    }
+    lines.push(Line::from(""));
+    lines.push(match &m.error {
+        Some(e) => Line::from(Span::styled(e.clone(), Style::default().fg(BAD))),
+        None => Line::from("Mirrors the wallet's new trades with your own size.".fg(DIM)),
+    });
+    lines.push(Line::from(
+        "↑↓ move · space toggles mirror · Enter follow · Esc cancel".fg(DIM),
+    ));
+
+    let height = (lines.len() as u16 + 2).clamp(14, f.area().height.saturating_sub(2));
+    let area = centered_rect(60, height, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" FOLLOW WALLET ".bold())
         .border_style(Style::default().fg(ACCENT));
     f.render_widget(
         Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),

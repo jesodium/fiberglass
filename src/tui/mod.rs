@@ -25,12 +25,14 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::config;
+use crate::copytrade::engine::CopyEngine;
 use crate::paper::store;
 use crate::paper::types::{PaperAccount, default_starting_balance};
 use crate::strategy::engine::{ExecutionMode, StrategyEngine};
 use app::App;
 
 const TICK_SECS: u64 = 10;
+const COPY_POLL_SECS: u64 = 15;
 
 /// Launch the terminal. `paper = true` trades the simulated account;
 /// `paper = false` runs LIVE against the real wallet and CLOB.
@@ -69,8 +71,10 @@ pub(crate) async fn run(paper: bool) -> Result<()> {
     };
     let account = Arc::new(Mutex::new(account));
 
-    // Engine shares the same account handle so its activity shows up live.
+    // Both engines share the same account handle so their activity shows up
+    // live alongside manual trades.
     let engine = StrategyEngine::new(Arc::clone(&account), TICK_SECS, mode);
+    let copy_engine = CopyEngine::new(Arc::clone(&account), COPY_POLL_SECS, mode);
     let shared = data::new_shared();
 
     // Background workers.
@@ -80,11 +84,13 @@ pub(crate) async fn run(paper: bool) -> Result<()> {
         live_user,
     ));
     tokio::spawn(engine.clone().run_forever());
+    tokio::spawn(copy_engine.clone().run_forever());
 
     let mut app = App::new(
         Arc::clone(&shared),
         Arc::clone(&account),
         engine.clone(),
+        copy_engine.clone(),
         !paper,
     );
 

@@ -34,6 +34,22 @@ pub enum StrategyCommand {
         /// Comma-separated token IDs to watch/trade
         #[arg(long)]
         tokens: String,
+        /// Strategy parameters as JSON (see `strategy list` for the shape).
+        /// Omitted fields fall back to the kind's defaults.
+        #[arg(long)]
+        params: Option<String>,
+    },
+
+    /// Edit an existing strategy's tokens and/or parameters
+    Edit {
+        /// Instance id
+        id: String,
+        /// New comma-separated token IDs (keeps the current set if omitted)
+        #[arg(long)]
+        tokens: Option<String>,
+        /// New parameters as JSON (merged is not done — pass the full object)
+        #[arg(long)]
+        params: Option<String>,
     },
 
     /// Remove a strategy instance from your roster
@@ -82,20 +98,37 @@ pub enum StrategyCommand {
 pub async fn execute(args: StrategyArgs, output: OutputFormat) -> Result<()> {
     match args.command {
         StrategyCommand::List => list(output),
-        StrategyCommand::Add { kind, id, tokens } => {
+        StrategyCommand::Add {
+            kind,
+            id,
+            tokens,
+            params,
+        } => {
             let id = id.unwrap_or_else(|| kind.clone());
-            let tokens: Vec<String> = tokens
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect();
-            if tokens.is_empty() {
-                bail!("Provide at least one token via --tokens");
-            }
+            let tokens = parse_tokens(&tokens)?;
+            let params = parse_params(params.as_deref())?;
             let engine = build_engine(ExecutionMode::Paper)?;
-            engine.add(&id, &kind, tokens)?;
+            engine.add_with_params(&id, &kind, tokens, params)?;
             println!("Added strategy '{id}' ({kind}). Enable + run with `strategy run`.");
+            Ok(())
+        }
+        StrategyCommand::Edit { id, tokens, params } => {
+            let engine = build_engine(ExecutionMode::Paper)?;
+            let current = engine
+                .snapshot()
+                .into_iter()
+                .find(|s| s.id == id)
+                .ok_or_else(|| anyhow::anyhow!("No strategy with id '{id}'"))?;
+            let tokens = match tokens {
+                Some(t) => parse_tokens(&t)?,
+                None => current.tokens.clone(),
+            };
+            let params = match params {
+                Some(p) => parse_params(Some(&p))?,
+                None => current.params.clone(),
+            };
+            engine.update(&id, tokens, params)?;
+            println!("Updated strategy '{id}'.");
             Ok(())
         }
         StrategyCommand::Remove { id } => {
@@ -293,6 +326,29 @@ fn drain_logs(engine: &StrategyEngine, seen: usize) -> usize {
         }
     }
     logs.len()
+}
+
+fn parse_tokens(s: &str) -> Result<Vec<String>> {
+    let tokens: Vec<String> = s
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if tokens.is_empty() {
+        bail!("Provide at least one token via --tokens");
+    }
+    Ok(tokens)
+}
+
+/// Parse a JSON params string, or `Null` (kind defaults) when not given.
+fn parse_params(s: Option<&str>) -> Result<serde_json::Value> {
+    match s {
+        None => Ok(serde_json::Value::Null),
+        Some(raw) => {
+            serde_json::from_str(raw).map_err(|e| anyhow::anyhow!("Invalid --params JSON: {e}"))
+        }
+    }
 }
 
 fn build_engine(mode: ExecutionMode) -> Result<StrategyEngine> {

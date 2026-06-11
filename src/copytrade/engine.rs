@@ -146,9 +146,6 @@ struct EngineState {
 pub(crate) struct CopyEngine {
     state: Arc<Mutex<EngineState>>,
     account: Arc<Mutex<PaperAccount>>,
-    // Read by `run_forever`, the spawn entry kept for a future TUI integration
-    // (the CLI `run` loop drives `poll` on its own cadence).
-    #[allow(dead_code)]
     interval: u64,
 }
 
@@ -194,7 +191,6 @@ impl CopyEngine {
     }
 
     /// Configured poll cadence (seconds). Exposed for status displays.
-    #[allow(dead_code)]
     pub fn interval(&self) -> u64 {
         self.interval
     }
@@ -273,6 +269,12 @@ impl CopyEngine {
             bail!("Follower '{id}' is disabled; enable it first");
         }
         self.log(LogLevel::Info, id, "Started");
+        Ok(())
+    }
+
+    pub fn stop(&self, id: &str) -> Result<()> {
+        self.mutate(id, |t| t.running = false)?;
+        self.log(LogLevel::Info, id, "Stopped");
         Ok(())
     }
 
@@ -581,10 +583,9 @@ impl CopyEngine {
         }
     }
 
-    /// Run the poll loop forever, sleeping `interval` between polls. Intended
-    /// to be `tokio::spawn`ed by a future TUI; the CLI `run` drives `poll`
-    /// itself so it can interleave Ctrl-C handling and log draining.
-    #[allow(dead_code)]
+    /// Run the poll loop forever, sleeping `interval` between polls. Spawned by
+    /// the TUI; the CLI `run` drives `poll` itself so it can interleave Ctrl-C
+    /// handling and log draining.
     pub async fn run_forever(self) {
         loop {
             if let Err(e) = self.poll().await {

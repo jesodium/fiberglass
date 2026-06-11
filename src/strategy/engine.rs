@@ -101,6 +101,8 @@ pub(crate) struct InstanceStatus {
     pub enabled: bool,
     pub running: bool,
     pub tokens: Vec<String>,
+    /// Live strategy parameters, for the params editor.
+    pub params: Value,
     pub signals: u64,
     pub orders: u64,
     pub errors: u64,
@@ -230,6 +232,43 @@ impl StrategyEngine {
         self.persist()
     }
 
+    /// Replace a strategy's watchlist and parameters in place, keeping its
+    /// enabled/running state, then persist. The new params are validated by
+    /// rebuilding the plugin before anything is committed, so a bad value
+    /// leaves the running strategy untouched.
+    pub fn update(&self, id: &str, tokens: Vec<String>, params: Value) -> Result<()> {
+        let kind = {
+            let st = self.state.lock().unwrap();
+            st.instances
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| i.kind.clone())
+                .ok_or_else(|| anyhow::anyhow!("No strategy with id '{id}'"))?
+        };
+        // Validate params (and build the fresh plugin) before mutating state.
+        let strat = registry::build(&kind, &params)?;
+        let tokens: Vec<String> = tokens
+            .iter()
+            .map(|t| quotes::canonical_token_id(t))
+            .collect();
+        {
+            let mut st = self.state.lock().unwrap();
+            let inst = st
+                .instances
+                .iter_mut()
+                .find(|i| i.id == id)
+                .ok_or_else(|| anyhow::anyhow!("No strategy with id '{id}'"))?;
+            inst.strat = strat;
+            inst.params = params;
+            inst.tokens = tokens;
+            // Params/tokens changed — drop stale price history so signals that
+            // depend on a lookback window start fresh.
+            inst.history.clear();
+        }
+        self.log(LogLevel::Info, id, "Updated parameters");
+        self.persist()
+    }
+
     pub fn remove(&self, id: &str) -> Result<()> {
         {
             let mut st = self.state.lock().unwrap();
@@ -336,6 +375,7 @@ impl StrategyEngine {
                 enabled: i.enabled,
                 running: i.running,
                 tokens: i.tokens.clone(),
+                params: i.params.clone(),
                 signals: i.signals,
                 orders: i.orders,
                 errors: i.errors,

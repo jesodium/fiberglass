@@ -9,6 +9,8 @@ use polymarket_client_sdk_v2::types::Decimal;
 
 use super::data::{MarketRow, Shared};
 use super::live::{LiveOrder, WalletInfo};
+use crate::copytrade::config::CopyTrader;
+use crate::copytrade::engine::CopyEngine;
 use crate::paper::engine as paper_engine;
 use crate::paper::store;
 use crate::paper::types::{
@@ -17,6 +19,7 @@ use crate::paper::types::{
 use crate::settings::{self, Settings};
 use crate::strategy::engine::{LogLevel, StrategyEngine};
 use crate::strategy::registry;
+use serde_json::Value;
 
 /// The screens of the terminal, in tab order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +32,7 @@ pub(crate) enum View {
     Orders,
     History,
     Strategies,
+    Copytrade,
     Logs,
     Settings,
 }
@@ -36,7 +40,7 @@ pub(crate) enum View {
 impl View {
     /// Tabs shown in the top bar (MarketDetail is reached from Markets, not a
     /// top-level tab).
-    pub const TABS: [View; 9] = [
+    pub const TABS: [View; 10] = [
         View::Dashboard,
         View::Markets,
         View::Portfolio,
@@ -44,6 +48,7 @@ impl View {
         View::Orders,
         View::History,
         View::Strategies,
+        View::Copytrade,
         View::Logs,
         View::Settings,
     ];
@@ -58,6 +63,7 @@ impl View {
             View::Orders => "Orders",
             View::History => "History",
             View::Strategies => "Strategies",
+            View::Copytrade => "Copytrade",
             View::Logs => "Logs",
             View::Settings => "Settings",
         }
@@ -176,13 +182,99 @@ fn join_decimals(values: &[Decimal]) -> String {
         .join(", ")
 }
 
-/// New-strategy form: pick a plugin and a watchlist, create + start it.
+/// One editable strategy parameter (key + its value as typed text).
+pub(crate) struct ParamField {
+    pub key: String,
+    pub value: String,
+}
+
+/// Strategy create/edit form: pick a plugin, a watchlist, and tune every
+/// parameter. Used both for new strategies and for editing an existing one
+/// (`editing = Some(id)`, with the kind locked).
 pub(crate) struct StratModal {
     /// Index into `registry::available()`.
     pub kind_idx: usize,
     /// Comma-separated token IDs being typed.
     pub tokens: String,
+    /// Editable parameters for the selected kind.
+    pub params: Vec<ParamField>,
+    /// Focused row: 0 = kind, 1 = tokens, 2+i = `params[i]`.
+    pub focus: usize,
+    /// Some(id) when editing an existing strategy rather than creating one.
+    pub editing: Option<String>,
     pub error: Option<String>,
+}
+
+impl StratModal {
+    /// Total focusable rows: kind + tokens + one per parameter.
+    pub fn rows(&self) -> usize {
+        2 + self.params.len()
+    }
+}
+
+/// Flatten a params JSON object into editable `(key, value)` rows.
+fn params_to_fields(v: &Value) -> Vec<ParamField> {
+    v.as_object()
+        .map(|map| {
+            map.iter()
+                .map(|(k, val)| ParamField {
+                    key: k.clone(),
+                    value: json_value_to_string(val),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Render a single JSON value as the text the editor shows.
+fn json_value_to_string(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Rebuild a params JSON object from edited rows, using `reference` (the
+/// kind's defaults) to decide each field's type. Blank means null, which the
+/// engine treats as "off" for optional fields.
+fn fields_to_params(fields: &[ParamField], reference: &Value) -> Value {
+    let ref_map = reference.as_object();
+    let mut map = serde_json::Map::new();
+    for f in fields {
+        let hint = ref_map.and_then(|m| m.get(&f.key));
+        map.insert(f.key.clone(), string_to_json_value(&f.value, hint));
+    }
+    Value::Object(map)
+}
+
+/// Parse one edited string back into JSON, guided by the reference value's
+/// type so enums stay strings and flags stay bools.
+fn string_to_json_value(s: &str, hint: Option<&Value>) -> Value {
+    let t = s.trim();
+    if t.is_empty() {
+        return Value::Null;
+    }
+    match hint {
+        Some(Value::Bool(_)) => Value::Bool(matches!(
+            t.to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "y" | "on"
+        )),
+        Some(Value::String(_)) => Value::String(t.to_string()),
+        _ => {
+            if let Ok(i) = t.parse::<i64>() {
+                Value::Number(i.into())
+            } else if let Ok(fl) = t.parse::<f64>() {
+                serde_json::Number::from_f64(fl)
+                    .map(Value::Number)
+                    .unwrap_or_else(|| Value::String(t.to_string()))
+            } else {
+                Value::String(t.to_string())
+            }
+        }
+    }
 }
 
 /// Paper-account reset form: choose a starting balance, wipe everything else.
@@ -191,17 +283,106 @@ pub(crate) struct ResetModal {
     pub error: Option<String>,
 }
 
+/// A field in the follow-wallet (copy-trading) form.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopyField {
+    Wallet,
+    Nickname,
+    Size,
+    MaxDollar,
+    MinPrice,
+    MaxPrice,
+    Slippage,
+    MirrorSells,
+}
+
+pub(crate) const COPY_FIELDS: [CopyField; 8] = [
+    CopyField::Wallet,
+    CopyField::Nickname,
+    CopyField::Size,
+    CopyField::MaxDollar,
+    CopyField::MinPrice,
+    CopyField::MaxPrice,
+    CopyField::Slippage,
+    CopyField::MirrorSells,
+];
+
+impl CopyField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wallet => "Wallet (0x…)",
+            Self::Nickname => "Nickname",
+            Self::Size => "Copy size ($)",
+            Self::MaxDollar => "Max per trade ($)",
+            Self::MinPrice => "Min price (0..1)",
+            Self::MaxPrice => "Max price (0..1)",
+            Self::Slippage => "Slippage (%)",
+            Self::MirrorSells => "Mirror sells (y/n)",
+        }
+    }
+}
+
+/// Follow-wallet form: a new copy-trading target with all its rules.
+pub(crate) struct CopyModal {
+    pub wallet: String,
+    pub nickname: String,
+    pub size: String,
+    pub max_dollar: String,
+    pub min_price: String,
+    pub max_price: String,
+    pub slippage: String,
+    pub mirror_sells: bool,
+    /// Index into [`COPY_FIELDS`].
+    pub focus: usize,
+    pub error: Option<String>,
+}
+
+impl Default for CopyModal {
+    fn default() -> Self {
+        Self {
+            wallet: String::new(),
+            nickname: String::new(),
+            size: "25".into(),
+            max_dollar: "100".into(),
+            min_price: "0".into(),
+            max_price: "1".into(),
+            slippage: "2".into(),
+            mirror_sells: true,
+            focus: 0,
+            error: None,
+        }
+    }
+}
+
+impl CopyModal {
+    /// The text buffer for a field, or `None` for the bool toggle.
+    fn buf(&mut self, f: CopyField) -> Option<&mut String> {
+        Some(match f {
+            CopyField::Wallet => &mut self.wallet,
+            CopyField::Nickname => &mut self.nickname,
+            CopyField::Size => &mut self.size,
+            CopyField::MaxDollar => &mut self.max_dollar,
+            CopyField::MinPrice => &mut self.min_price,
+            CopyField::MaxPrice => &mut self.max_price,
+            CopyField::Slippage => &mut self.slippage,
+            CopyField::MirrorSells => return None,
+        })
+    }
+}
+
 pub(crate) struct App {
     pub view: View,
     pub should_quit: bool,
     pub data: Shared,
     pub account: Arc<Mutex<PaperAccount>>,
     pub engine: StrategyEngine,
+    pub copy_engine: CopyEngine,
 
     pub markets_sel: usize,
     pub positions_sel: usize,
     pub orders_sel: usize,
     pub strategies_sel: usize,
+    pub copytrade_sel: usize,
     pub settings_sel: usize,
     pub history_scroll: usize,
     pub logs_scroll: usize,
@@ -226,6 +407,8 @@ pub(crate) struct App {
     pub modal: Option<OrderModal>,
     /// New-strategy form (Strategies tab → `n`).
     pub strat_modal: Option<StratModal>,
+    /// Follow-wallet form (Copytrade tab → `n`).
+    pub copy_modal: Option<CopyModal>,
     /// Paper-account reset form (Settings tab → `r`).
     pub reset_modal: Option<ResetModal>,
     pub status: String,
@@ -238,6 +421,7 @@ impl App {
         data: Shared,
         account: Arc<Mutex<PaperAccount>>,
         engine: StrategyEngine,
+        copy_engine: CopyEngine,
         live: bool,
     ) -> Self {
         let status = if live {
@@ -256,10 +440,12 @@ impl App {
             data,
             account,
             engine,
+            copy_engine,
             markets_sel: 0,
             positions_sel: 0,
             orders_sel: 0,
             strategies_sel: 0,
+            copytrade_sel: 0,
             settings_sel: 0,
             history_scroll: 0,
             logs_scroll: 0,
@@ -273,6 +459,7 @@ impl App {
             detail_token: 0,
             modal: None,
             strat_modal: None,
+            copy_modal: None,
             reset_modal: None,
             status,
             live,
@@ -379,6 +566,10 @@ impl App {
             self.strat_modal_key(key);
             return;
         }
+        if self.copy_modal.is_some() {
+            self.copy_modal_key(key);
+            return;
+        }
         if self.reset_modal.is_some() {
             self.reset_modal_key(key);
             return;
@@ -457,13 +648,8 @@ impl App {
             KeyCode::Char('g') if self.view == View::MarketDetail => self.attach_strategy(),
             KeyCode::Char('c') if self.view == View::Orders => self.cancel_selected_order(),
             // Strategy controls
-            KeyCode::Char('n') if self.view == View::Strategies => {
-                self.strat_modal = Some(StratModal {
-                    kind_idx: 0,
-                    tokens: String::new(),
-                    error: None,
-                });
-            }
+            KeyCode::Char('n') if self.view == View::Strategies => self.open_new_strategy(),
+            KeyCode::Char('m') if self.view == View::Strategies => self.open_edit_strategy(),
             KeyCode::Char('s') if self.view == View::Strategies => {
                 self.strategy_action(StratAct::Start)
             }
@@ -479,6 +665,25 @@ impl App {
             // Delete the selected strategy (capital D or Delete to avoid slips).
             KeyCode::Char('D') | KeyCode::Delete if self.view == View::Strategies => {
                 self.strategy_action(StratAct::Delete)
+            }
+            // Copy-trading controls (mirror the Strategies tab).
+            KeyCode::Char('n') if self.view == View::Copytrade => {
+                self.copy_modal = Some(CopyModal::default());
+            }
+            KeyCode::Char('s') if self.view == View::Copytrade => {
+                self.copytrade_action(CopyAct::Start)
+            }
+            KeyCode::Char('x') if self.view == View::Copytrade => {
+                self.copytrade_action(CopyAct::Stop)
+            }
+            KeyCode::Char('e') if self.view == View::Copytrade => {
+                self.copytrade_action(CopyAct::Enable)
+            }
+            KeyCode::Char('d') if self.view == View::Copytrade => {
+                self.copytrade_action(CopyAct::Disable)
+            }
+            KeyCode::Char('D') | KeyCode::Delete if self.view == View::Copytrade => {
+                self.copytrade_action(CopyAct::Delete)
             }
             // Settings: reveal/hide the private key (live wallet).
             KeyCode::Char('w') if self.view == View::Settings => {
@@ -551,6 +756,10 @@ impl App {
             View::Strategies => {
                 let len = self.engine.snapshot().len();
                 step(&mut self.strategies_sel, len);
+            }
+            View::Copytrade => {
+                let len = self.copy_engine.snapshot().len();
+                step(&mut self.copytrade_sel, len);
             }
             View::Settings => {
                 step(&mut self.settings_sel, SETTING_ROWS.len());
@@ -1166,36 +1375,109 @@ impl App {
 
     // --- New-strategy modal -----------------------------------------------
 
+    /// Open the create form, seeded with the first kind's default params.
+    fn open_new_strategy(&mut self) {
+        let avail = registry::available();
+        let kind = avail.first().map_or("momentum", |m| m.kind);
+        self.strat_modal = Some(StratModal {
+            kind_idx: 0,
+            tokens: String::new(),
+            params: params_to_fields(&registry::default_params(kind)),
+            focus: 1,
+            editing: None,
+            error: None,
+        });
+    }
+
+    /// Open the edit form for the selected strategy, prefilled with its current
+    /// tokens and parameters (kind locked).
+    fn open_edit_strategy(&mut self) {
+        let snap = self.engine.snapshot();
+        let Some(s) = snap.get(self.strategies_sel) else {
+            self.status = "No strategy selected to edit.".into();
+            return;
+        };
+        let kind_idx = registry::available()
+            .iter()
+            .position(|m| m.kind == s.kind)
+            .unwrap_or(0);
+        self.strat_modal = Some(StratModal {
+            kind_idx,
+            tokens: s.tokens.join(","),
+            params: params_to_fields(&s.params),
+            focus: 1,
+            editing: Some(s.id.clone()),
+            error: None,
+        });
+    }
+
     fn strat_modal_key(&mut self, key: KeyEvent) {
-        let n = registry::available().len();
+        let avail_len = registry::available().len();
         let Some(m) = self.strat_modal.as_mut() else {
             return;
         };
+        let rows = m.rows();
         match key.code {
             KeyCode::Esc => self.strat_modal = None,
-            KeyCode::Left => m.kind_idx = m.kind_idx.saturating_sub(1),
-            KeyCode::Right => {
-                if m.kind_idx + 1 < n {
+            KeyCode::Enter => self.submit_strat_modal(),
+            KeyCode::Up | KeyCode::BackTab => m.focus = m.focus.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => {
+                if m.focus + 1 < rows {
+                    m.focus += 1;
+                }
+            }
+            // ←→ switch the strategy kind (only on the kind row, create-only),
+            // regenerating the editable params from that kind's defaults.
+            KeyCode::Left if m.focus == 0 && m.editing.is_none() => {
+                if m.kind_idx > 0 {
+                    m.kind_idx -= 1;
+                    let kind = registry::available()[m.kind_idx].kind;
+                    m.params = params_to_fields(&registry::default_params(kind));
+                    m.focus = m.focus.min(m.rows() - 1);
+                }
+            }
+            KeyCode::Right if m.focus == 0 && m.editing.is_none() => {
+                if m.kind_idx + 1 < avail_len {
                     m.kind_idx += 1;
+                    let kind = registry::available()[m.kind_idx].kind;
+                    m.params = params_to_fields(&registry::default_params(kind));
                 }
             }
             KeyCode::Backspace => {
-                m.tokens.pop();
+                if m.focus == 1 {
+                    m.tokens.pop();
+                } else if m.focus >= 2
+                    && let Some(p) = m.params.get_mut(m.focus - 2)
+                {
+                    p.value.pop();
+                }
             }
-            // Token IDs are decimal or 0x-hex strings.
-            KeyCode::Char(c) if c.is_ascii_alphanumeric() || c == ',' => m.tokens.push(c),
-            KeyCode::Enter => self.submit_strat_modal(),
+            KeyCode::Char(c) if !c.is_control() => {
+                if m.focus == 1 {
+                    // Token IDs are decimal or 0x-hex strings.
+                    if c.is_ascii_alphanumeric() || c == ',' {
+                        m.tokens.push(c);
+                    }
+                } else if m.focus >= 2
+                    && let Some(p) = m.params.get_mut(m.focus - 2)
+                {
+                    // Params accept numbers, signs, decimals, and enum/bool text.
+                    p.value.push(c);
+                }
+            }
             _ => {}
         }
     }
 
     fn submit_strat_modal(&mut self) {
-        let (kind, tokens_s) = {
+        let (kind, tokens_s, editing, params) = {
             let Some(m) = self.strat_modal.as_ref() else {
                 return;
             };
-            let avail = registry::available();
-            (avail[m.kind_idx].kind.to_string(), m.tokens.clone())
+            let kind = registry::available()[m.kind_idx].kind.to_string();
+            let reference = registry::default_params(&kind);
+            let params = fields_to_params(&m.params, &reference);
+            (kind, m.tokens.clone(), m.editing.clone(), params)
         };
         let tokens: Vec<String> = tokens_s
             .split(',')
@@ -1204,23 +1486,34 @@ impl App {
             .map(str::to_string)
             .collect();
         if tokens.is_empty() {
-            if let Some(m) = self.strat_modal.as_mut() {
-                m.error = Some("Enter at least one token ID".into());
-            }
+            self.set_strat_error("Enter at least one token ID");
             return;
         }
-        let id = self.unique_strategy_id(&kind);
-        match self.engine.add(&id, &kind, tokens) {
-            Ok(()) => {
-                let _ = self.engine.start(&id);
-                self.status = format!("Created strategy '{id}' ({kind}) and started it.");
-                self.strat_modal = None;
-            }
-            Err(e) => {
-                if let Some(m) = self.strat_modal.as_mut() {
-                    m.error = Some(e.to_string());
+        match editing {
+            Some(id) => match self.engine.update(&id, tokens, params) {
+                Ok(()) => {
+                    self.status = format!("Updated strategy '{id}'.");
+                    self.strat_modal = None;
+                }
+                Err(e) => self.set_strat_error(&e.to_string()),
+            },
+            None => {
+                let id = self.unique_strategy_id(&kind);
+                match self.engine.add_with_params(&id, &kind, tokens, params) {
+                    Ok(()) => {
+                        let _ = self.engine.start(&id);
+                        self.status = format!("Created strategy '{id}' ({kind}) and started it.");
+                        self.strat_modal = None;
+                    }
+                    Err(e) => self.set_strat_error(&e.to_string()),
                 }
             }
+        }
+    }
+
+    fn set_strat_error(&mut self, e: &str) {
+        if let Some(m) = self.strat_modal.as_mut() {
+            m.error = Some(e.to_string());
         }
     }
 
@@ -1393,6 +1686,172 @@ impl App {
             Err(e) => e.to_string(),
         };
     }
+
+    // --- Copy-trading ------------------------------------------------------
+
+    fn copy_modal_key(&mut self, key: KeyEvent) {
+        let Some(m) = self.copy_modal.as_mut() else {
+            return;
+        };
+        let n = COPY_FIELDS.len();
+        let field = COPY_FIELDS[m.focus];
+        match key.code {
+            KeyCode::Esc => self.copy_modal = None,
+            KeyCode::Enter => self.submit_copy_modal(),
+            KeyCode::Up | KeyCode::BackTab => m.focus = m.focus.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => {
+                if m.focus + 1 < n {
+                    m.focus += 1;
+                }
+            }
+            // The mirror-sells toggle flips with space or ←→.
+            KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right
+                if field == CopyField::MirrorSells =>
+            {
+                m.mirror_sells = !m.mirror_sells;
+            }
+            KeyCode::Backspace => {
+                if let Some(buf) = m.buf(field) {
+                    buf.pop();
+                }
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if let Some(buf) = m.buf(field) {
+                    buf.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_copy_modal(&mut self) {
+        let Some(m) = self.copy_modal.as_ref() else {
+            return;
+        };
+        let wallet = m.wallet.trim().to_string();
+        if polymarket_client_sdk_v2::types::Address::from_str(&wallet).is_err() {
+            self.set_copy_error("Enter a valid 0x wallet address");
+            return;
+        }
+        let nickname = if m.nickname.trim().is_empty() {
+            short_wallet(&wallet)
+        } else {
+            m.nickname.trim().to_string()
+        };
+        let parse = |s: &str, label: &str| -> Result<Decimal, String> {
+            Decimal::from_str(s.trim()).map_err(|_| format!("{label} must be a number"))
+        };
+        let (size, max_dollar, min_price, max_price, slippage) = match (
+            parse(&m.size, "Copy size"),
+            parse(&m.max_dollar, "Max per trade"),
+            parse(&m.min_price, "Min price"),
+            parse(&m.max_price, "Max price"),
+            parse(&m.slippage, "Slippage"),
+        ) {
+            (Ok(a), Ok(b), Ok(c), Ok(d), Ok(e)) => (a, b, c, d, e),
+            (a, b, c, d, e) => {
+                let err = [a.err(), b.err(), c.err(), d.err(), e.err()]
+                    .into_iter()
+                    .flatten()
+                    .next()
+                    .unwrap_or_else(|| "Invalid number".into());
+                self.set_copy_error(&err);
+                return;
+            }
+        };
+        if min_price < Decimal::ZERO || max_price > Decimal::ONE || min_price > max_price {
+            self.set_copy_error("Price band must satisfy 0 ≤ min ≤ max ≤ 1");
+            return;
+        }
+        let mirror_sells = m.mirror_sells;
+        let id = self.unique_copy_id(&nickname, &wallet);
+        let cfg = CopyTrader {
+            id: id.clone(),
+            wallet,
+            nickname: nickname.clone(),
+            copy_size_usd: size,
+            max_dollar_cap: max_dollar,
+            price_min: min_price,
+            price_max: max_price,
+            slippage_pct: slippage,
+            mirror_sells,
+            enabled: true,
+        };
+        match self.copy_engine.add(cfg) {
+            Ok(()) => {
+                let _ = self.copy_engine.start(&id);
+                self.status = format!("Following '{nickname}' as '{id}' (running).");
+                self.copy_modal = None;
+            }
+            Err(e) => self.set_copy_error(&e.to_string()),
+        }
+    }
+
+    fn set_copy_error(&mut self, e: &str) {
+        if let Some(m) = self.copy_modal.as_mut() {
+            m.error = Some(e.to_string());
+        }
+    }
+
+    fn unique_copy_id(&self, nickname: &str, wallet: &str) -> String {
+        let base: String = nickname
+            .trim()
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect();
+        let base = base.trim_matches('-').to_string();
+        let base = if base.is_empty() {
+            wallet.trim_start_matches("0x").chars().take(8).collect()
+        } else {
+            base
+        };
+        let existing: Vec<String> = self
+            .copy_engine
+            .snapshot()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        if !existing.contains(&base) {
+            return base;
+        }
+        (2..)
+            .map(|n| format!("{base}-{n}"))
+            .find(|cand| !existing.contains(cand))
+            .unwrap_or(base)
+    }
+
+    fn copytrade_action(&mut self, act: CopyAct) {
+        let snap = self.copy_engine.snapshot();
+        let Some(s) = snap.get(self.copytrade_sel) else {
+            return;
+        };
+        let id = s.id.clone();
+        let res = match act {
+            CopyAct::Start => self.copy_engine.start(&id),
+            CopyAct::Stop => self.copy_engine.stop(&id),
+            CopyAct::Enable => self.copy_engine.set_enabled(&id, true),
+            CopyAct::Disable => self.copy_engine.set_enabled(&id, false),
+            CopyAct::Delete => self.copy_engine.remove(&id),
+        };
+        if matches!(act, CopyAct::Delete) {
+            let len = self.copy_engine.snapshot().len();
+            self.copytrade_sel = self.copytrade_sel.min(len.saturating_sub(1));
+        }
+        self.status = match res {
+            Ok(()) => format!("{} {}", act.verb(), id),
+            Err(e) => e.to_string(),
+        };
+    }
+}
+
+/// `0x1234…cdef` short form for nicknames/listings.
+fn short_wallet(wallet: &str) -> String {
+    let w = wallet.trim();
+    if w.len() <= 12 {
+        return w.to_string();
+    }
+    format!("{}…{}", &w[..6], &w[w.len() - 4..])
 }
 
 enum StratAct {
@@ -1411,6 +1870,26 @@ impl StratAct {
             StratAct::Enable => "Enabled",
             StratAct::Disable => "Disabled",
             StratAct::Delete => "Deleted",
+        }
+    }
+}
+
+enum CopyAct {
+    Start,
+    Stop,
+    Enable,
+    Disable,
+    Delete,
+}
+
+impl CopyAct {
+    fn verb(&self) -> &'static str {
+        match self {
+            CopyAct::Start => "Started",
+            CopyAct::Stop => "Stopped",
+            CopyAct::Enable => "Enabled",
+            CopyAct::Disable => "Disabled",
+            CopyAct::Delete => "Unfollowed",
         }
     }
 }
