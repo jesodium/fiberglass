@@ -1,8 +1,9 @@
 //! The interactive trading terminal — the primary interface to the app.
 //!
 //! Brings together three concurrent pieces in one process:
-//!   * a background [`data`] refresher keeping markets and order books live,
-//!   * the local [`crate::strategy`] engine ticking strategies, and
+//!   * a background [`data`] refresher keeping markets and order books live
+//!     (and ticking the TP/SL [`crate::guard`]s),
+//!   * the [`crate::copytrade`] engine mirroring followed wallets, and
 //!   * a render loop ([`App`]/[`ui`]) that stays responsive throughout because
 //!     it only ever reads already-fetched state.
 
@@ -25,13 +26,11 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::config;
-use crate::copytrade::engine::CopyEngine;
+use crate::copytrade::engine::{CopyEngine, ExecutionMode};
 use crate::paper::store;
 use crate::paper::types::{PaperAccount, default_starting_balance};
-use crate::strategy::engine::{ExecutionMode, StrategyEngine};
 use app::App;
 
-const TICK_SECS: u64 = 10;
 const COPY_POLL_SECS: u64 = 15;
 
 /// Launch the terminal. `paper = true` trades the simulated account;
@@ -71,25 +70,22 @@ pub(crate) async fn run(paper: bool) -> Result<()> {
     };
     let account = Arc::new(Mutex::new(account));
 
-    // Both engines share the same account handle so their activity shows up
-    // live alongside manual trades.
-    let engine = StrategyEngine::new(Arc::clone(&account), TICK_SECS, mode);
+    // The copy engine shares the same account handle so its fills show up live
+    // alongside manual trades.
     let copy_engine = CopyEngine::new(Arc::clone(&account), COPY_POLL_SECS, mode);
     let shared = data::new_shared();
 
-    // Background workers.
+    // Background workers. The refresher also ticks the TP/SL guards.
     tokio::spawn(data::refresher(
         Arc::clone(&shared),
         Arc::clone(&account),
         live_user,
     ));
-    tokio::spawn(engine.clone().run_forever());
     tokio::spawn(copy_engine.clone().run_forever());
 
     let mut app = App::new(
         Arc::clone(&shared),
         Arc::clone(&account),
-        engine.clone(),
         copy_engine.clone(),
         !paper,
     );

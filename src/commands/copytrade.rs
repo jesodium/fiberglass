@@ -12,10 +12,9 @@ use clap::{Args, Subcommand};
 use polymarket_client_sdk_v2::types::{Address, Decimal};
 
 use crate::copytrade::config::{self, CopyTrader};
-use crate::copytrade::engine::CopyEngine;
+use crate::copytrade::engine::{CopyEngine, ExecutionMode};
 use crate::output::OutputFormat;
 use crate::paper::store;
-use crate::strategy::engine::ExecutionMode;
 
 #[derive(Args)]
 pub struct CopyTradeArgs {

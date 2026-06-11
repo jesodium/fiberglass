@@ -17,9 +17,6 @@ use crate::paper::types::{
     MarketMeta, OrderKind, PaperAccount, Quote, TradeSide, default_starting_balance,
 };
 use crate::settings::{self, Settings};
-use crate::strategy::engine::{LogLevel, StrategyEngine};
-use crate::strategy::registry;
-use serde_json::Value;
 
 /// The screens of the terminal, in tab order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +28,6 @@ pub(crate) enum View {
     Positions,
     Orders,
     History,
-    Strategies,
     Copytrade,
     Logs,
     Settings,
@@ -40,14 +36,13 @@ pub(crate) enum View {
 impl View {
     /// Tabs shown in the top bar (MarketDetail is reached from Markets, not a
     /// top-level tab).
-    pub const TABS: [View; 10] = [
+    pub const TABS: [View; 9] = [
         View::Dashboard,
         View::Markets,
         View::Portfolio,
         View::Positions,
         View::Orders,
         View::History,
-        View::Strategies,
         View::Copytrade,
         View::Logs,
         View::Settings,
@@ -62,7 +57,6 @@ impl View {
             View::Positions => "Positions",
             View::Orders => "Orders",
             View::History => "History",
-            View::Strategies => "Strategies",
             View::Copytrade => "Copytrade",
             View::Logs => "Logs",
             View::Settings => "Settings",
@@ -182,101 +176,6 @@ fn join_decimals(values: &[Decimal]) -> String {
         .join(", ")
 }
 
-/// One editable strategy parameter (key + its value as typed text).
-pub(crate) struct ParamField {
-    pub key: String,
-    pub value: String,
-}
-
-/// Strategy create/edit form: pick a plugin, a watchlist, and tune every
-/// parameter. Used both for new strategies and for editing an existing one
-/// (`editing = Some(id)`, with the kind locked).
-pub(crate) struct StratModal {
-    /// Index into `registry::available()`.
-    pub kind_idx: usize,
-    /// Comma-separated token IDs being typed.
-    pub tokens: String,
-    /// Editable parameters for the selected kind.
-    pub params: Vec<ParamField>,
-    /// Focused row: 0 = kind, 1 = tokens, 2+i = `params[i]`.
-    pub focus: usize,
-    /// Some(id) when editing an existing strategy rather than creating one.
-    pub editing: Option<String>,
-    pub error: Option<String>,
-}
-
-impl StratModal {
-    /// Total focusable rows: kind + tokens + one per parameter.
-    pub fn rows(&self) -> usize {
-        2 + self.params.len()
-    }
-}
-
-/// Flatten a params JSON object into editable `(key, value)` rows.
-fn params_to_fields(v: &Value) -> Vec<ParamField> {
-    v.as_object()
-        .map(|map| {
-            map.iter()
-                .map(|(k, val)| ParamField {
-                    key: k.clone(),
-                    value: json_value_to_string(val),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Render a single JSON value as the text the editor shows.
-fn json_value_to_string(v: &Value) -> String {
-    match v {
-        Value::Null => String::new(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
-/// Rebuild a params JSON object from edited rows, using `reference` (the
-/// kind's defaults) to decide each field's type. Blank means null, which the
-/// engine treats as "off" for optional fields.
-fn fields_to_params(fields: &[ParamField], reference: &Value) -> Value {
-    let ref_map = reference.as_object();
-    let mut map = serde_json::Map::new();
-    for f in fields {
-        let hint = ref_map.and_then(|m| m.get(&f.key));
-        map.insert(f.key.clone(), string_to_json_value(&f.value, hint));
-    }
-    Value::Object(map)
-}
-
-/// Parse one edited string back into JSON, guided by the reference value's
-/// type so enums stay strings and flags stay bools.
-fn string_to_json_value(s: &str, hint: Option<&Value>) -> Value {
-    let t = s.trim();
-    if t.is_empty() {
-        return Value::Null;
-    }
-    match hint {
-        Some(Value::Bool(_)) => Value::Bool(matches!(
-            t.to_ascii_lowercase().as_str(),
-            "true" | "1" | "yes" | "y" | "on"
-        )),
-        Some(Value::String(_)) => Value::String(t.to_string()),
-        _ => {
-            if let Ok(i) = t.parse::<i64>() {
-                Value::Number(i.into())
-            } else if let Ok(fl) = t.parse::<f64>() {
-                serde_json::Number::from_f64(fl)
-                    .map(Value::Number)
-                    .unwrap_or_else(|| Value::String(t.to_string()))
-            } else {
-                Value::String(t.to_string())
-            }
-        }
-    }
-}
-
 /// Paper-account reset form: choose a starting balance, wipe everything else.
 pub(crate) struct ResetModal {
     pub balance: String,
@@ -375,13 +274,11 @@ pub(crate) struct App {
     pub should_quit: bool,
     pub data: Shared,
     pub account: Arc<Mutex<PaperAccount>>,
-    pub engine: StrategyEngine,
     pub copy_engine: CopyEngine,
 
     pub markets_sel: usize,
     pub positions_sel: usize,
     pub orders_sel: usize,
-    pub strategies_sel: usize,
     pub copytrade_sel: usize,
     pub settings_sel: usize,
     pub history_scroll: usize,
@@ -405,8 +302,6 @@ pub(crate) struct App {
     pub detail_token: usize,
 
     pub modal: Option<OrderModal>,
-    /// New-strategy form (Strategies tab → `n`).
-    pub strat_modal: Option<StratModal>,
     /// Follow-wallet form (Copytrade tab → `n`).
     pub copy_modal: Option<CopyModal>,
     /// Paper-account reset form (Settings tab → `r`).
@@ -420,7 +315,6 @@ impl App {
     pub fn new(
         data: Shared,
         account: Arc<Mutex<PaperAccount>>,
-        engine: StrategyEngine,
         copy_engine: CopyEngine,
         live: bool,
     ) -> Self {
@@ -439,12 +333,10 @@ impl App {
             should_quit: false,
             data,
             account,
-            engine,
             copy_engine,
             markets_sel: 0,
             positions_sel: 0,
             orders_sel: 0,
-            strategies_sel: 0,
             copytrade_sel: 0,
             settings_sel: 0,
             history_scroll: 0,
@@ -458,7 +350,6 @@ impl App {
             detail: None,
             detail_token: 0,
             modal: None,
-            strat_modal: None,
             copy_modal: None,
             reset_modal: None,
             status,
@@ -562,10 +453,6 @@ impl App {
             self.modal_key(key);
             return;
         }
-        if self.strat_modal.is_some() {
-            self.strat_modal_key(key);
-            return;
-        }
         if self.copy_modal.is_some() {
             self.copy_modal_key(key);
             return;
@@ -601,7 +488,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => {
-                self.status = "Tab/1-9 switch views · ↑↓/jk move · Enter open · b/s order · c cancel · g attach strat · q or Ctrl+C quit".to_string();
+                self.status = "Tab/1-9 switch views · ↑↓/jk move · Enter open · b/s order · c cancel · q or Ctrl+C quit".to_string();
             }
             KeyCode::Tab => self.cycle_tab(1),
             KeyCode::BackTab => self.cycle_tab(-1),
@@ -645,28 +532,8 @@ impl App {
             KeyCode::Char('s') if self.view == View::MarketDetail => {
                 self.open_modal(TradeSide::Sell)
             }
-            KeyCode::Char('g') if self.view == View::MarketDetail => self.attach_strategy(),
             KeyCode::Char('c') if self.view == View::Orders => self.cancel_selected_order(),
-            // Strategy controls
-            KeyCode::Char('n') if self.view == View::Strategies => self.open_new_strategy(),
-            KeyCode::Char('m') if self.view == View::Strategies => self.open_edit_strategy(),
-            KeyCode::Char('s') if self.view == View::Strategies => {
-                self.strategy_action(StratAct::Start)
-            }
-            KeyCode::Char('x') if self.view == View::Strategies => {
-                self.strategy_action(StratAct::Stop)
-            }
-            KeyCode::Char('e') if self.view == View::Strategies => {
-                self.strategy_action(StratAct::Enable)
-            }
-            KeyCode::Char('d') if self.view == View::Strategies => {
-                self.strategy_action(StratAct::Disable)
-            }
-            // Delete the selected strategy (capital D or Delete to avoid slips).
-            KeyCode::Char('D') | KeyCode::Delete if self.view == View::Strategies => {
-                self.strategy_action(StratAct::Delete)
-            }
-            // Copy-trading controls (mirror the Strategies tab).
+            // Copy-trading controls.
             KeyCode::Char('n') if self.view == View::Copytrade => {
                 self.copy_modal = Some(CopyModal::default());
             }
@@ -752,10 +619,6 @@ impl App {
                     self.account.lock().unwrap().open_orders.len()
                 };
                 step(&mut self.orders_sel, len);
-            }
-            View::Strategies => {
-                let len = self.engine.snapshot().len();
-                step(&mut self.strategies_sel, len);
             }
             View::Copytrade => {
                 let len = self.copy_engine.snapshot().len();
@@ -1248,38 +1111,23 @@ impl App {
             return None;
         }
         let token_id = m.token_id.clone();
-        let tp = parse_opt_pct(&m.tp);
-        let sl = parse_opt_pct(&m.sl);
-        let trailing = self.settings.default_trailing_stop_pct.map(dec_to_f64);
+        let tp = parse_opt_dec(&m.tp);
+        let sl = parse_opt_dec(&m.sl);
+        let trailing = self.settings.default_trailing_stop_pct;
         if tp.is_none() && sl.is_none() && trailing.is_none() {
             return None;
         }
-        let params = serde_json::json!({
-            "take_profit_pct": tp,
-            "stop_loss_pct": sl,
-            "trailing_stop_pct": trailing,
-            "sell_fraction": 1.0,
-        });
-        let id = format!("exit-{}", &token_id[..token_id.len().min(6)]);
-        // One guard per token: drop any existing one, then attach fresh.
-        let _ = self.engine.remove(&id);
-        match self
-            .engine
-            .add_with_params(&id, "tp_sl", vec![token_id], params)
-        {
+        // One guard per token; arm replaces any existing one. The TUI data
+        // refresher watches the position and sells when a threshold is crossed.
+        match crate::guard::arm(&token_id, tp, sl, trailing) {
             Ok(()) => {
-                let _ = self.engine.start(&id);
-                let mut bits = Vec::new();
-                if let Some(v) = tp {
-                    bits.push(format!("TP +{v:.0}%"));
-                }
-                if let Some(v) = sl {
-                    bits.push(format!("SL -{v:.0}%"));
-                }
-                if let Some(v) = trailing {
-                    bits.push(format!("trail {v:.0}%"));
-                }
-                Some(format!("guard armed ({})", bits.join(", ")))
+                let g = crate::guard::Guard {
+                    token_id,
+                    take_profit_pct: tp,
+                    stop_loss_pct: sl,
+                    trailing_stop_pct: trailing,
+                };
+                Some(format!("guard armed ({})", g.describe()))
             }
             Err(_) => None,
         }
@@ -1348,17 +1196,15 @@ impl App {
         };
 
         let shared = Arc::clone(&self.data);
-        let engine = self.engine.clone();
         tokio::spawn(async move {
-            let (level, msg) = match super::live::place(order).await {
-                Ok(s) => (LogLevel::Trade, s),
-                Err(e) => (LogLevel::Error, format!("Live order FAILED: {e}")),
+            let msg = match super::live::place(order).await {
+                Ok(s) => s,
+                Err(e) => format!("Live order FAILED: {e}"),
             };
-            engine.log(level, "live", &msg);
             shared.lock().unwrap().notices.push(msg);
         });
-        // Arm a TP/SL guard now; the engine watches the live position once the
-        // refresher hydrates it.
+        // Arm a TP/SL guard now; the data refresher watches the live position
+        // once it hydrates and sells when a threshold is crossed.
         let exit = self.attach_exit_from_modal();
         self.status = match exit {
             Some(note) => format!("Submitting live order… · {note}"),
@@ -1371,161 +1217,6 @@ impl App {
         if let Some(m) = self.modal.as_mut() {
             m.error = Some(e);
         }
-    }
-
-    // --- New-strategy modal -----------------------------------------------
-
-    /// Open the create form, seeded with the first kind's default params.
-    fn open_new_strategy(&mut self) {
-        let avail = registry::available();
-        let kind = avail.first().map_or("momentum", |m| m.kind);
-        self.strat_modal = Some(StratModal {
-            kind_idx: 0,
-            tokens: String::new(),
-            params: params_to_fields(&registry::default_params(kind)),
-            focus: 1,
-            editing: None,
-            error: None,
-        });
-    }
-
-    /// Open the edit form for the selected strategy, prefilled with its current
-    /// tokens and parameters (kind locked).
-    fn open_edit_strategy(&mut self) {
-        let snap = self.engine.snapshot();
-        let Some(s) = snap.get(self.strategies_sel) else {
-            self.status = "No strategy selected to edit.".into();
-            return;
-        };
-        let kind_idx = registry::available()
-            .iter()
-            .position(|m| m.kind == s.kind)
-            .unwrap_or(0);
-        self.strat_modal = Some(StratModal {
-            kind_idx,
-            tokens: s.tokens.join(","),
-            params: params_to_fields(&s.params),
-            focus: 1,
-            editing: Some(s.id.clone()),
-            error: None,
-        });
-    }
-
-    fn strat_modal_key(&mut self, key: KeyEvent) {
-        let avail_len = registry::available().len();
-        let Some(m) = self.strat_modal.as_mut() else {
-            return;
-        };
-        let rows = m.rows();
-        match key.code {
-            KeyCode::Esc => self.strat_modal = None,
-            KeyCode::Enter => self.submit_strat_modal(),
-            KeyCode::Up | KeyCode::BackTab => m.focus = m.focus.saturating_sub(1),
-            KeyCode::Down | KeyCode::Tab => {
-                if m.focus + 1 < rows {
-                    m.focus += 1;
-                }
-            }
-            // ←→ switch the strategy kind (only on the kind row, create-only),
-            // regenerating the editable params from that kind's defaults.
-            KeyCode::Left if m.focus == 0 && m.editing.is_none() => {
-                if m.kind_idx > 0 {
-                    m.kind_idx -= 1;
-                    let kind = registry::available()[m.kind_idx].kind;
-                    m.params = params_to_fields(&registry::default_params(kind));
-                    m.focus = m.focus.min(m.rows() - 1);
-                }
-            }
-            KeyCode::Right if m.focus == 0 && m.editing.is_none() => {
-                if m.kind_idx + 1 < avail_len {
-                    m.kind_idx += 1;
-                    let kind = registry::available()[m.kind_idx].kind;
-                    m.params = params_to_fields(&registry::default_params(kind));
-                }
-            }
-            KeyCode::Backspace => {
-                if m.focus == 1 {
-                    m.tokens.pop();
-                } else if m.focus >= 2
-                    && let Some(p) = m.params.get_mut(m.focus - 2)
-                {
-                    p.value.pop();
-                }
-            }
-            KeyCode::Char(c) if !c.is_control() => {
-                if m.focus == 1 {
-                    // Token IDs are decimal or 0x-hex strings.
-                    if c.is_ascii_alphanumeric() || c == ',' {
-                        m.tokens.push(c);
-                    }
-                } else if m.focus >= 2
-                    && let Some(p) = m.params.get_mut(m.focus - 2)
-                {
-                    // Params accept numbers, signs, decimals, and enum/bool text.
-                    p.value.push(c);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn submit_strat_modal(&mut self) {
-        let (kind, tokens_s, editing, params) = {
-            let Some(m) = self.strat_modal.as_ref() else {
-                return;
-            };
-            let kind = registry::available()[m.kind_idx].kind.to_string();
-            let reference = registry::default_params(&kind);
-            let params = fields_to_params(&m.params, &reference);
-            (kind, m.tokens.clone(), m.editing.clone(), params)
-        };
-        let tokens: Vec<String> = tokens_s
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
-        if tokens.is_empty() {
-            self.set_strat_error("Enter at least one token ID");
-            return;
-        }
-        match editing {
-            Some(id) => match self.engine.update(&id, tokens, params) {
-                Ok(()) => {
-                    self.status = format!("Updated strategy '{id}'.");
-                    self.strat_modal = None;
-                }
-                Err(e) => self.set_strat_error(&e.to_string()),
-            },
-            None => {
-                let id = self.unique_strategy_id(&kind);
-                match self.engine.add_with_params(&id, &kind, tokens, params) {
-                    Ok(()) => {
-                        let _ = self.engine.start(&id);
-                        self.status = format!("Created strategy '{id}' ({kind}) and started it.");
-                        self.strat_modal = None;
-                    }
-                    Err(e) => self.set_strat_error(&e.to_string()),
-                }
-            }
-        }
-    }
-
-    fn set_strat_error(&mut self, e: &str) {
-        if let Some(m) = self.strat_modal.as_mut() {
-            m.error = Some(e.to_string());
-        }
-    }
-
-    fn unique_strategy_id(&self, kind: &str) -> String {
-        let existing: Vec<String> = self.engine.snapshot().into_iter().map(|s| s.id).collect();
-        if !existing.iter().any(|e| e == kind) {
-            return kind.to_string();
-        }
-        (2..)
-            .map(|n| format!("{kind}-{n}"))
-            .find(|cand| !existing.contains(cand))
-            .unwrap_or_else(|| kind.to_string())
     }
 
     // --- Reset paper account ----------------------------------------------
@@ -1629,62 +1320,18 @@ impl App {
             d.live_orders.retain(|o| o.id != order.id);
         }
         let shared = Arc::clone(&self.data);
-        let engine = self.engine.clone();
         let id = order.id.clone();
         tokio::spawn(async move {
-            let (level, msg) = match super::live::cancel_order(&id).await {
-                Ok(s) => (LogLevel::Trade, s),
-                Err(e) => (LogLevel::Error, format!("Cancel FAILED: {e}")),
+            let msg = match super::live::cancel_order(&id).await {
+                Ok(s) => s,
+                Err(e) => format!("Cancel FAILED: {e}"),
             };
-            engine.log(level, "live", &msg);
             shared.lock().unwrap().notices.push(msg);
         });
         self.status = format!(
             "Cancelling live order {}…",
             &order.id[..order.id.len().min(12)]
         );
-    }
-
-    // --- Strategies --------------------------------------------------------
-
-    fn attach_strategy(&mut self) {
-        let Some(d) = &self.detail else { return };
-        let Some(token_id) = d.token_ids.get(self.detail_token).cloned() else {
-            return;
-        };
-        let id = format!("momentum-{}", &token_id[..token_id.len().min(6)]);
-        match self.engine.add(&id, "momentum", vec![token_id]) {
-            Ok(()) => {
-                let _ = self.engine.start(&id);
-                self.status =
-                    format!("Attached momentum strategy '{id}' (running). See Strategies tab.");
-            }
-            Err(e) => self.status = format!("Attach failed: {e}"),
-        }
-    }
-
-    fn strategy_action(&mut self, act: StratAct) {
-        let snap = self.engine.snapshot();
-        let Some(s) = snap.get(self.strategies_sel) else {
-            return;
-        };
-        let id = s.id.clone();
-        let res = match act {
-            StratAct::Start => self.engine.start(&id),
-            StratAct::Stop => self.engine.stop(&id),
-            StratAct::Enable => self.engine.set_enabled(&id, true),
-            StratAct::Disable => self.engine.set_enabled(&id, false),
-            StratAct::Delete => self.engine.remove(&id),
-        };
-        // Removing the last row leaves the cursor past the end — pull it back.
-        if matches!(act, StratAct::Delete) {
-            let len = self.engine.snapshot().len();
-            self.strategies_sel = self.strategies_sel.min(len.saturating_sub(1));
-        }
-        self.status = match res {
-            Ok(()) => format!("{} {}", act.verb(), id),
-            Err(e) => e.to_string(),
-        };
     }
 
     // --- Copy-trading ------------------------------------------------------
@@ -1854,26 +1501,6 @@ fn short_wallet(wallet: &str) -> String {
     format!("{}…{}", &w[..6], &w[w.len() - 4..])
 }
 
-enum StratAct {
-    Start,
-    Stop,
-    Enable,
-    Disable,
-    Delete,
-}
-
-impl StratAct {
-    fn verb(&self) -> &'static str {
-        match self {
-            StratAct::Start => "Started",
-            StratAct::Stop => "Stopped",
-            StratAct::Enable => "Enabled",
-            StratAct::Disable => "Disabled",
-            StratAct::Delete => "Deleted",
-        }
-    }
-}
-
 enum CopyAct {
     Start,
     Stop,
@@ -1928,18 +1555,14 @@ fn parse_dec(s: &str) -> anyhow::Result<Decimal> {
     Decimal::from_str(s.trim()).map_err(|_| anyhow::anyhow!("Enter a number (got '{s}')"))
 }
 
-/// Parse an optional percent field: blank → `None`, else `Some(value)`.
-fn parse_opt_pct(s: &str) -> Option<f64> {
+/// Parse an optional percent field: blank → `None`, else `Some(value)` for a
+/// positive number (used to arm TP/SL guards).
+fn parse_opt_dec(s: &str) -> Option<Decimal> {
     let t = s.trim();
     if t.is_empty() {
         return None;
     }
-    t.parse::<f64>().ok().filter(|v| *v > 0.0)
-}
-
-fn dec_to_f64(d: Decimal) -> f64 {
-    use std::str::FromStr as _;
-    f64::from_str(&d.to_string()).unwrap_or(0.0)
+    Decimal::from_str(t).ok().filter(|v| *v > Decimal::ZERO)
 }
 
 #[cfg(test)]
@@ -1988,10 +1611,11 @@ mod tests {
     }
 
     #[test]
-    fn opt_pct_parses_blank_and_values() {
-        assert_eq!(parse_opt_pct(""), None);
-        assert_eq!(parse_opt_pct("  "), None);
-        assert_eq!(parse_opt_pct("25"), Some(25.0));
-        assert_eq!(parse_opt_pct("-5"), None);
+    fn opt_dec_parses_blank_and_values() {
+        use rust_decimal_macros::dec;
+        assert_eq!(parse_opt_dec(""), None);
+        assert_eq!(parse_opt_dec("  "), None);
+        assert_eq!(parse_opt_dec("25"), Some(dec!(25)));
+        assert_eq!(parse_opt_dec("-5"), None);
     }
 }

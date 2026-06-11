@@ -107,7 +107,6 @@ pub(crate) mod series;
 pub(crate) mod settings;
 pub(crate) mod setup;
 pub(crate) mod sports;
-pub(crate) mod strategy;
 pub(crate) mod tags;
 pub(crate) mod upgrade;
 pub(crate) mod wallet;

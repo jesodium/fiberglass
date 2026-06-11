@@ -3,8 +3,8 @@
 //! A background task ([`refresher`]) periodically pulls the markets list and
 //! the order books for whatever tokens the UI is currently watching, writing
 //! everything into a single [`SharedData`] behind a mutex. The render loop
-//! only ever reads this struct, so drawing never blocks on the network and the
-//! interface stays responsive while strategies trade.
+//! only ever reads this struct, so drawing never blocks on the network. This
+//! task also ticks the TP/SL [`crate::guard`]s against the fresh books.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,8 +14,10 @@ use polymarket_client_sdk_v2::gamma;
 use polymarket_client_sdk_v2::types::{Address, Decimal};
 
 use super::live;
+use crate::guard::{self, GuardAction};
+use crate::paper::engine as paper_engine;
 use crate::paper::quotes;
-use crate::paper::types::PaperAccount;
+use crate::paper::types::{PaperAccount, TradeSide};
 
 /// A market flattened to just what the UI needs.
 #[derive(Clone, Debug)]
@@ -85,6 +87,8 @@ pub(crate) async fn refresher(
 ) {
     let gamma = gamma::Client::default();
     let mut market_ticks = 0u32;
+    // Highest mark seen per token, for trailing-stop guards.
+    let mut guard_peaks: HashMap<String, Decimal> = HashMap::new();
     loop {
         // Live: mirror the real wallet into the account snapshot the views read.
         if let Some(user) = live_user {
@@ -148,17 +152,116 @@ pub(crate) async fn refresher(
                     );
                 }
             }
-            let mut d = shared.lock().unwrap();
-            for (k, v) in books {
-                d.books.insert(k, v);
+            {
+                let mut d = shared.lock().unwrap();
+                for (k, v) in &books {
+                    d.books.insert(k.clone(), v.clone());
+                }
+                for (k, v) in &marks {
+                    d.marks.insert(k.clone(), *v);
+                }
+                d.last_refresh = Some(Utc::now());
             }
-            for (k, v) in marks {
-                d.marks.insert(k, v);
-            }
-            d.last_refresh = Some(Utc::now());
+
+            // Evaluate TP/SL guards against the fresh books and exit positions
+            // whose thresholds have been crossed.
+            tick_guards(
+                &shared,
+                &account,
+                &books,
+                &marks,
+                live_user.is_some(),
+                &mut guard_peaks,
+            );
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+/// Evaluate every armed TP/SL guard against the freshest books and exit any
+/// position whose threshold has been crossed. Paper sells settle locally; live
+/// sells are submitted to the CLOB in the background. Triggered guards (and
+/// guards whose position is gone) are cleared from the store.
+fn tick_guards(
+    shared: &Shared,
+    account: &Arc<Mutex<PaperAccount>>,
+    books: &HashMap<String, BookView>,
+    marks: &HashMap<String, Decimal>,
+    live: bool,
+    peaks: &mut HashMap<String, Decimal>,
+) {
+    let book = guard::load().unwrap_or_default();
+    if book.guards.is_empty() {
+        return;
+    }
+    let now = Utc::now();
+    for g in &book.guards {
+        let (free, avg) = {
+            let acct = account.lock().unwrap();
+            match acct.positions.get(&g.token_id) {
+                Some(p) => (
+                    (p.size - acct.reserved_shares(&g.token_id)).max(Decimal::ZERO),
+                    p.avg_price,
+                ),
+                None => (Decimal::ZERO, Decimal::ZERO),
+            }
+        };
+        let mid = marks.get(&g.token_id).copied();
+        let best_bid = books.get(&g.token_id).and_then(|b| b.best_bid);
+
+        match guard::evaluate(g, free, avg, mid, best_bid, peaks) {
+            GuardAction::Hold => {}
+            GuardAction::Drop => {
+                let _ = guard::clear(&g.token_id);
+            }
+            GuardAction::Sell { shares, reason } => {
+                let bids = books
+                    .get(&g.token_id)
+                    .map(|b| b.bids.clone())
+                    .unwrap_or_default();
+                if live {
+                    let order = crate::trade::LiveOrder::Market {
+                        token_id: g.token_id.clone(),
+                        side: TradeSide::Sell,
+                        amount: shares,
+                    };
+                    let shared = Arc::clone(shared);
+                    let label = reason.to_string();
+                    tokio::spawn(async move {
+                        let msg = match live::place(order).await {
+                            Ok(s) => format!("{label} exit: {s}"),
+                            Err(e) => format!("{label} exit FAILED: {e}"),
+                        };
+                        shared.lock().unwrap().notices.push(msg);
+                    });
+                } else {
+                    let result = {
+                        let mut acct = account.lock().unwrap();
+                        paper_engine::market_sell(&mut acct, &g.token_id, &bids, shares, now)
+                    };
+                    match result {
+                        Ok(t) => {
+                            let _ = crate::paper::store::save(&account.lock().unwrap());
+                            shared.lock().unwrap().notices.push(format!(
+                                "{reason} exit: sold {} @ {} (pnl {})",
+                                t.size.round_dp(2),
+                                t.price.round_dp(4),
+                                t.realized_pnl.unwrap_or_default().round_dp(2)
+                            ));
+                        }
+                        Err(e) => {
+                            shared
+                                .lock()
+                                .unwrap()
+                                .notices
+                                .push(format!("{reason} exit rejected: {e}"));
+                        }
+                    }
+                }
+                let _ = guard::clear(&g.token_id);
+            }
+        }
     }
 }
 

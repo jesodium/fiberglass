@@ -23,7 +23,49 @@ use super::config::{CopyBook, CopyTrader};
 use crate::paper::engine as paper_engine;
 use crate::paper::quotes;
 use crate::paper::types::{PaperAccount, TradeSide};
-use crate::strategy::engine::{ExecutionMode, LogLevel, LogLine};
+
+/// Where executed orders go: the local paper account or the real CLOB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExecutionMode {
+    Paper,
+    Live,
+}
+
+impl std::fmt::Display for ExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Paper => write!(f, "paper"),
+            Self::Live => write!(f, "live"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LogLevel {
+    Info,
+    Trade,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Trade => "TRADE",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LogLine {
+    pub time: DateTime<Utc>,
+    pub level: LogLevel,
+    pub source: String,
+    pub message: String,
+}
 
 const MAX_LOGS: usize = 500;
 const LOG_FILE: &str = "copytrade.log";
