@@ -291,6 +291,7 @@ pub(crate) async fn market_buy(token_id: &str, amount: &str, output: &OutputForm
         token_id,
         &meta,
         &book.asks,
+        &book.bids,
         amount,
         Utc::now(),
     )?;

@@ -111,6 +111,7 @@ async fn fetch_positions(user: Address) -> Result<Vec<Position>> {
             size: p.size,
             avg_price: p.avg_price,
             realized_pnl: p.realized_pnl,
+            entry_midpoint: Decimal::ZERO,
         })
         .collect())
 }

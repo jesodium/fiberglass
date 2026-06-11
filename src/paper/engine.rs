@@ -109,6 +109,7 @@ pub(crate) fn market_buy(
     token_id: &str,
     meta: &MarketMeta,
     asks: &[(Decimal, Decimal)],
+    bids: &[(Decimal, Decimal)],
     usd_amount: Decimal,
     now: DateTime<Utc>,
 ) -> Result<Trade> {
@@ -139,12 +140,14 @@ pub(crate) fn market_buy(
 
     account.cash -= cost;
     let price = cost / shares;
+    let entry_midpoint = midpoint(bids, asks, price);
     Ok(record_buy(
         account,
         token_id,
         meta,
         shares,
         price,
+        entry_midpoint,
         OrderKind::Market,
         now,
     ))
@@ -209,7 +212,20 @@ pub(crate) fn limit_buy(
         && ask <= price
     {
         account.cash -= ask * size;
-        let trade = record_buy(account, token_id, meta, size, ask, OrderKind::Limit, now);
+        let entry_midpoint = match (quote.best_bid, quote.best_ask) {
+            (Some(b), Some(a)) => (b + a) / Decimal::from(2),
+            _ => ask,
+        };
+        let trade = record_buy(
+            account,
+            token_id,
+            meta,
+            size,
+            ask,
+            entry_midpoint,
+            OrderKind::Limit,
+            now,
+        );
         return Ok(LimitOutcome::Filled(trade));
     }
 
@@ -293,12 +309,17 @@ pub(crate) fn settle_open_orders(
                     question: order.question.clone(),
                     outcome: order.outcome.clone(),
                 };
+                let entry_midpoint = match (quote.best_bid, quote.best_ask) {
+                    (Some(b), Some(a)) => (b + a) / Decimal::from(2),
+                    _ => order.price,
+                };
                 fills.push(record_buy(
                     account,
                     &order.token_id,
                     &meta,
                     order.size,
                     order.price,
+                    entry_midpoint,
                     OrderKind::Limit,
                     now,
                 ));
@@ -351,7 +372,12 @@ pub(crate) fn portfolio_view(
         .map(|p| {
             let mark = marks.get(&p.token_id).copied();
             let value = mark.map(|m| m * p.size);
-            let upnl = mark.map(|m| (m - p.avg_price) * p.size);
+            let entry = if p.entry_midpoint > Decimal::ZERO {
+                p.entry_midpoint
+            } else {
+                p.avg_price
+            };
+            let upnl = mark.map(|m| (m - entry) * p.size);
             positions_value += value.unwrap_or(Decimal::ZERO);
             unrealized += upnl.unwrap_or(Decimal::ZERO);
             PositionView {
@@ -451,13 +477,25 @@ pub(crate) fn compute_stats(account: &PaperAccount) -> Stats {
     }
 }
 
+/// Compute the bid-ask midpoint from order book levels. Falls back to
+/// `fallback` when only one side (or neither) is available.
+fn midpoint(bids: &[(Decimal, Decimal)], asks: &[(Decimal, Decimal)], fallback: Decimal) -> Decimal {
+    match (bids.first(), asks.first()) {
+        (Some(&(b, _)), Some(&(a, _))) => (b + a) / Decimal::from(2),
+        _ => fallback,
+    }
+}
+
 /// Record a buy fill. Caller must already have deducted the cash.
+/// `entry_midpoint` is the bid-ask midpoint at fill time, used so that
+/// unrealized PnL tracks market movement rather than the spread.
 fn record_buy(
     account: &mut PaperAccount,
     token_id: &str,
     meta: &MarketMeta,
     shares: Decimal,
     price: Decimal,
+    entry_midpoint: Decimal,
     kind: OrderKind,
     now: DateTime<Utc>,
 ) -> Trade {
@@ -471,9 +509,12 @@ fn record_buy(
             size: Decimal::ZERO,
             avg_price: Decimal::ZERO,
             realized_pnl: Decimal::ZERO,
+            entry_midpoint: Decimal::ZERO,
         });
     let new_size = position.size + shares;
     position.avg_price = (position.avg_price * position.size + price * shares) / new_size;
+    position.entry_midpoint =
+        (position.entry_midpoint * position.size + entry_midpoint * shares) / new_size;
     position.size = new_size;
 
     let trade = Trade {
@@ -584,7 +625,9 @@ mod tests {
         let mut acct = account();
         // $50 at 0.50 ($25 worth... no: level cost = 0.50*100 = $50), then 0.60.
         let asks = [(dec!(0.50), dec!(100)), (dec!(0.60), dec!(100))];
-        let trade = market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(80), now()).unwrap();
+        let bids = [(dec!(0.48), dec!(100))];
+        let trade =
+            market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(80), now()).unwrap();
         // $50 buys 100 shares at 0.50, remaining $30 buys 50 shares at 0.60.
         assert_eq!(trade.size, dec!(150));
         assert_eq!(trade.notional, dec!(80));
@@ -598,7 +641,9 @@ mod tests {
     fn market_buy_rejects_insufficient_cash() {
         let mut acct = account();
         let asks = [(dec!(0.50), dec!(1_000_000))];
-        let err = market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(20_000), now()).unwrap_err();
+        let bids = [(dec!(0.48), dec!(1_000_000))];
+        let err = market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(20_000), now())
+            .unwrap_err();
         assert!(err.to_string().contains("Insufficient paper cash"));
     }
 
@@ -606,7 +651,9 @@ mod tests {
     fn market_buy_rejects_thin_book() {
         let mut acct = account();
         let asks = [(dec!(0.50), dec!(10))]; // only $5 of depth
-        let err = market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(100), now()).unwrap_err();
+        let bids = [(dec!(0.48), dec!(10))];
+        let err = market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(100), now())
+            .unwrap_err();
         assert!(err.to_string().contains("Insufficient liquidity"));
         assert_eq!(acct.cash, dec!(10_000)); // nothing deducted
     }
@@ -615,7 +662,8 @@ mod tests {
     fn market_sell_realizes_pnl_and_closes_position() {
         let mut acct = account();
         let asks = [(dec!(0.40), dec!(100))];
-        market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(40), now()).unwrap();
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
 
         let bids = [(dec!(0.70), dec!(100))];
         let trade = market_sell(&mut acct, TOKEN, &bids, dec!(100), now()).unwrap();
@@ -628,7 +676,8 @@ mod tests {
     fn market_sell_rejects_overselling() {
         let mut acct = account();
         let asks = [(dec!(0.40), dec!(100))];
-        market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(40), now()).unwrap();
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
         let bids = [(dec!(0.70), dec!(500))];
         assert!(market_sell(&mut acct, TOKEN, &bids, dec!(200), now()).is_err());
     }
@@ -748,7 +797,8 @@ mod tests {
     fn limit_sell_reserves_shares_against_double_sell() {
         let mut acct = account();
         let asks = [(dec!(0.40), dec!(100))];
-        market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(40), now()).unwrap();
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
 
         let quote = Quote {
             best_bid: Some(dec!(0.45)),
@@ -798,14 +848,16 @@ mod tests {
     fn portfolio_view_computes_equity_and_roi() {
         let mut acct = account();
         let asks = [(dec!(0.40), dec!(100))];
-        market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(40), now()).unwrap();
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
 
         let mut marks = BTreeMap::new();
         marks.insert(TOKEN.to_string(), dec!(0.50));
         let view = portfolio_view(&acct, &marks);
         assert_eq!(view.cash, dec!(9_960));
         assert_eq!(view.positions_value, dec!(50));
-        assert_eq!(view.unrealized_pnl, dec!(10));
+        // entry_midpoint = (0.38 + 0.40) / 2 = 0.39 → upnl = (0.50 - 0.39) * 100 = 11
+        assert_eq!(view.unrealized_pnl, dec!(11));
         assert_eq!(view.equity, dec!(10_010));
         assert_eq!(view.roi_pct, dec!(0.10));
     }
@@ -815,7 +867,8 @@ mod tests {
         let mut acct = account();
         // Buy 200 shares at 0.50.
         let asks = [(dec!(0.50), dec!(1_000))];
-        market_buy(&mut acct, TOKEN, &meta(), &asks, dec!(100), now()).unwrap();
+        let bids = [(dec!(0.48), dec!(1_000))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(100), now()).unwrap();
         // Winning sell of 100 at 0.60: +$10.
         let bids = [(dec!(0.60), dec!(1_000))];
         market_sell(&mut acct, TOKEN, &bids, dec!(100), now()).unwrap();

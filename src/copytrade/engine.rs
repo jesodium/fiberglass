@@ -567,7 +567,7 @@ impl CopyEngine {
                         cfg.slippage_pct,
                     )?;
                     let t = paper_engine::market_buy(
-                        &mut acct, &token_id, &meta, &book.asks, *usd, now,
+                        &mut acct, &token_id, &meta, &book.asks, &book.bids, *usd, now,
                     )?;
                     format!(
                         "COPY BUY {} {} @ {} (${})",

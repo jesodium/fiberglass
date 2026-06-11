@@ -68,6 +68,11 @@ pub(crate) struct Position {
     pub avg_price: Decimal,
     /// Realized PnL accumulated by sells of this position.
     pub realized_pnl: Decimal,
+    /// Midpoint at entry — used for unrealized PnL so the spread doesn't
+    /// create an artificial loss right after buying. Defaults to 0 (backfill
+    /// for old accounts), which makes portfolio_view fall back to avg_price.
+    #[serde(default)]
+    pub entry_midpoint: Decimal,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

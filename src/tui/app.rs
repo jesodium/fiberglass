@@ -975,7 +975,7 @@ impl App {
                     let usd = parse_dec(&m.amount)?;
                     paper_engine::check_slippage(&book.asks, TradeSide::Buy, usd, slippage)?;
                     let t = paper_engine::market_buy(
-                        &mut acct, &token_id, &meta, &book.asks, usd, now,
+                        &mut acct, &token_id, &meta, &book.asks, &book.bids, usd, now,
                     )?;
                     Ok(format!(
                         "Bought {} @ {}",
