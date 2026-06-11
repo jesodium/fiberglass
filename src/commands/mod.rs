@@ -96,6 +96,7 @@ pub(crate) mod approve;
 pub(crate) mod bridge;
 pub(crate) mod clob;
 pub(crate) mod comments;
+pub(crate) mod copytrade;
 pub(crate) mod ctf;
 pub(crate) mod data;
 pub(crate) mod events;

@@ -132,7 +132,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         View::Markets => "↑↓/jk move · Enter open · / search · Tab views · q quit",
         View::MarketDetail => "←→ outcome · b buy · s sell · g attach strategy · Esc back",
         View::Orders => "↑↓ move · c cancel · Tab views",
-        View::Strategies => "n new · s start · x stop · e enable · d disable · ↑↓ move",
+        View::Strategies => "n new · s start · x stop · e enable · d disable · D delete · ↑↓ move",
         View::Settings => {
             "↑↓ move · Enter edit/cycle · w reveal key · r reset paper account · Tab views"
         }
@@ -807,7 +807,7 @@ fn strategies(f: &mut Frame, app: &App, area: Rect) {
         "Last Action",
     ]))
     .block(panel(&format!(
-        "Strategies — {} mode, {}s tick (n new · s start · x stop · e enable · d disable)",
+        "Strategies — {} mode, {}s tick (n new · s start · x stop · e enable · d disable · D delete)",
         app.engine.mode(),
         app.engine.tick_secs()
     )))

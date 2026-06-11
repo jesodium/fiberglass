@@ -476,6 +476,10 @@ impl App {
             KeyCode::Char('d') if self.view == View::Strategies => {
                 self.strategy_action(StratAct::Disable)
             }
+            // Delete the selected strategy (capital D or Delete to avoid slips).
+            KeyCode::Char('D') | KeyCode::Delete if self.view == View::Strategies => {
+                self.strategy_action(StratAct::Delete)
+            }
             // Settings: reveal/hide the private key (live wallet).
             KeyCode::Char('w') if self.view == View::Settings => {
                 if self.wallet.is_some() {
@@ -1377,7 +1381,13 @@ impl App {
             StratAct::Stop => self.engine.stop(&id),
             StratAct::Enable => self.engine.set_enabled(&id, true),
             StratAct::Disable => self.engine.set_enabled(&id, false),
+            StratAct::Delete => self.engine.remove(&id),
         };
+        // Removing the last row leaves the cursor past the end — pull it back.
+        if matches!(act, StratAct::Delete) {
+            let len = self.engine.snapshot().len();
+            self.strategies_sel = self.strategies_sel.min(len.saturating_sub(1));
+        }
         self.status = match res {
             Ok(()) => format!("{} {}", act.verb(), id),
             Err(e) => e.to_string(),
@@ -1390,6 +1400,7 @@ enum StratAct {
     Stop,
     Enable,
     Disable,
+    Delete,
 }
 
 impl StratAct {
@@ -1399,6 +1410,7 @@ impl StratAct {
             StratAct::Stop => "Stopped",
             StratAct::Enable => "Enabled",
             StratAct::Disable => "Disabled",
+            StratAct::Delete => "Deleted",
         }
     }
 }
