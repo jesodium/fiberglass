@@ -42,12 +42,30 @@ pub(crate) struct BookView {
     pub asks: Vec<(Decimal, Decimal)>,
 }
 
+/// Resolution facts for a token whose market has resolved, keyed off Gamma's
+/// final outcome prices.
+#[derive(Clone, Debug)]
+pub(crate) struct ResolutionInfo {
+    /// pUSD paid per share at settlement: 1 (won) or 0 (lost).
+    pub payout: Decimal,
+    pub won: bool,
+    /// On-chain condition ID (0x hex), needed for live redemption.
+    pub condition_id: Option<String>,
+    pub neg_risk: bool,
+    /// This token's index among the market's outcomes (neg-risk redemption
+    /// takes per-outcome amounts).
+    pub outcome_index: usize,
+    pub outcome_count: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct SharedData {
     pub markets: Vec<MarketRow>,
     pub markets_status: String,
     pub books: HashMap<String, BookView>,
     pub marks: HashMap<String, Decimal>,
+    /// Resolved markets among the held tokens, refreshed on the slow cadence.
+    pub resolutions: HashMap<String, ResolutionInfo>,
     /// Tokens the UI wants fresh books for (positions + open market).
     pub watch: Vec<String>,
     pub last_refresh: Option<DateTime<Utc>>,
@@ -118,6 +136,22 @@ pub(crate) async fn refresher(
                 }
             }
         }
+        // Check held tokens for market resolution on the same slow cadence.
+        if market_ticks == 0 {
+            let held: Vec<String> = account.lock().unwrap().positions.keys().cloned().collect();
+            if !held.is_empty()
+                && let Ok(resolved) = fetch_resolutions(&gamma, &held).await
+                && !resolved.is_empty()
+            {
+                let mut d = shared.lock().unwrap();
+                for (token, info) in &resolved {
+                    // Resolved books vanish — mark at the payout so value,
+                    // uPnL and ROI stay correct until the position settles.
+                    d.marks.insert(token.clone(), info.payout);
+                }
+                d.resolutions.extend(resolved);
+            }
+        }
         market_ticks = (market_ticks + 1) % 6;
 
         // Refresh books for watched tokens every pass.
@@ -158,6 +192,10 @@ pub(crate) async fn refresher(
                     d.books.insert(k.clone(), v.clone());
                 }
                 for (k, v) in &marks {
+                    // The payout mark is authoritative once a market resolves.
+                    if d.resolutions.contains_key(k) {
+                        continue;
+                    }
                     d.marks.insert(k.clone(), *v);
                 }
                 d.last_refresh = Some(Utc::now());
@@ -309,6 +347,64 @@ fn to_market_row(m: gamma::types::response::Market) -> Option<MarketRow> {
     })
 }
 
+/// Whether a Gamma market has actually resolved (payouts fixed at 0/1), not
+/// merely closed for trading at interim prices.
+fn market_resolved(closed: Option<bool>, uma_status: Option<&str>, prices: &[Decimal]) -> bool {
+    let finalized = closed == Some(true) || uma_status == Some("resolved");
+    finalized
+        && !prices.is_empty()
+        && prices
+            .iter()
+            .all(|p| *p == Decimal::ZERO || *p == Decimal::ONE)
+}
+
+/// Look up the markets behind `token_ids` and report any that have resolved,
+/// keyed by token with each token's payout (its final outcome price).
+async fn fetch_resolutions(
+    client: &gamma::Client,
+    token_ids: &[String],
+) -> anyhow::Result<HashMap<String, ResolutionInfo>> {
+    let mut out = HashMap::new();
+    let parsed: Vec<_> = token_ids
+        .iter()
+        .filter_map(|t| quotes::parse_token_id(t).ok())
+        .collect();
+    for chunk in parsed.chunks(20) {
+        let request = gamma::types::request::MarketsRequest::builder()
+            .clob_token_ids(chunk.to_vec())
+            .limit(chunk.len() as i32)
+            .build();
+        for m in client.markets(&request).await? {
+            let prices = m.outcome_prices.unwrap_or_default();
+            if !market_resolved(m.closed, m.uma_resolution_status.as_deref(), &prices) {
+                continue;
+            }
+            let Some(tokens) = m.clob_token_ids else {
+                continue;
+            };
+            let neg_risk = m.neg_risk.unwrap_or(false);
+            let condition_id = m.condition_id.map(|b| b.to_string());
+            for (i, token) in tokens.iter().enumerate() {
+                let Some(payout) = prices.get(i).copied() else {
+                    continue;
+                };
+                out.insert(
+                    token.to_string(),
+                    ResolutionInfo {
+                        payout,
+                        won: payout == Decimal::ONE,
+                        condition_id: condition_id.clone(),
+                        neg_risk,
+                        outcome_index: i,
+                        outcome_count: tokens.len(),
+                    },
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
 async fn fetch_markets(client: &gamma::Client) -> anyhow::Result<Vec<MarketRow>> {
     let request = gamma::types::request::MarketsRequest::builder()
         .closed(false)
@@ -354,4 +450,27 @@ pub(crate) fn run_search(shared: Shared, query: String) {
         d.search_results = rows;
         d.search_results_query = query;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn resolved_needs_final_prices_and_a_close_signal() {
+        let final_prices = [dec!(1), dec!(0)];
+        assert!(market_resolved(Some(true), None, &final_prices));
+        assert!(market_resolved(None, Some("resolved"), &final_prices));
+        // Closed but trading prices not finalized — not resolved.
+        assert!(!market_resolved(
+            Some(true),
+            None,
+            &[dec!(0.97), dec!(0.03)]
+        ));
+        // Final-looking prices on an open market — not resolved.
+        assert!(!market_resolved(Some(false), None, &final_prices));
+        assert!(!market_resolved(None, None, &final_prices));
+        assert!(!market_resolved(Some(true), None, &[]));
+    }
 }

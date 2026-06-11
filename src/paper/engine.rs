@@ -344,6 +344,36 @@ pub(crate) fn settle_open_orders(
     fills
 }
 
+/// Settle a position at market resolution: every share pays out `payout`
+/// pUSD ($1 won, $0 lost). The token's resting orders are cancelled first
+/// (refunding reserved buy cash, releasing reserved sell shares), then the
+/// whole position closes at the payout price as a settlement trade.
+pub(crate) fn settle_position(
+    account: &mut PaperAccount,
+    token_id: &str,
+    payout: Decimal,
+    now: DateTime<Utc>,
+) -> Result<Trade> {
+    if payout < Decimal::ZERO || payout > Decimal::ONE {
+        bail!("Settlement payout must be between 0 and 1, got {payout}");
+    }
+    if !account.positions.contains_key(token_id) {
+        bail!("No paper position in token {token_id}");
+    }
+    let orders = std::mem::take(&mut account.open_orders);
+    for order in orders {
+        if order.token_id == token_id {
+            if order.side == TradeSide::Buy {
+                account.cash += order.price * order.size;
+            }
+        } else {
+            account.open_orders.push(order);
+        }
+    }
+    let size = account.positions[token_id].size;
+    record_sell(account, token_id, size, payout, OrderKind::Settlement, now)
+}
+
 /// Cancel a resting order, refunding reserved cash for buys.
 pub(crate) fn cancel_order(account: &mut PaperAccount, order_id: u64) -> Result<OpenOrder> {
     let idx = account
@@ -479,7 +509,11 @@ pub(crate) fn compute_stats(account: &PaperAccount) -> Stats {
 
 /// Compute the bid-ask midpoint from order book levels. Falls back to
 /// `fallback` when only one side (or neither) is available.
-fn midpoint(bids: &[(Decimal, Decimal)], asks: &[(Decimal, Decimal)], fallback: Decimal) -> Decimal {
+fn midpoint(
+    bids: &[(Decimal, Decimal)],
+    asks: &[(Decimal, Decimal)],
+    fallback: Decimal,
+) -> Decimal {
     match (bids.first(), asks.first()) {
         (Some(&(b, _)), Some(&(a, _))) => (b + a) / Decimal::from(2),
         _ => fallback,
@@ -626,8 +660,7 @@ mod tests {
         // $50 at 0.50 ($25 worth... no: level cost = 0.50*100 = $50), then 0.60.
         let asks = [(dec!(0.50), dec!(100)), (dec!(0.60), dec!(100))];
         let bids = [(dec!(0.48), dec!(100))];
-        let trade =
-            market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(80), now()).unwrap();
+        let trade = market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(80), now()).unwrap();
         // $50 buys 100 shares at 0.50, remaining $30 buys 50 shares at 0.60.
         assert_eq!(trade.size, dec!(150));
         assert_eq!(trade.notional, dec!(80));
@@ -642,8 +675,8 @@ mod tests {
         let mut acct = account();
         let asks = [(dec!(0.50), dec!(1_000_000))];
         let bids = [(dec!(0.48), dec!(1_000_000))];
-        let err = market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(20_000), now())
-            .unwrap_err();
+        let err =
+            market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(20_000), now()).unwrap_err();
         assert!(err.to_string().contains("Insufficient paper cash"));
     }
 
@@ -652,8 +685,8 @@ mod tests {
         let mut acct = account();
         let asks = [(dec!(0.50), dec!(10))]; // only $5 of depth
         let bids = [(dec!(0.48), dec!(10))];
-        let err = market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(100), now())
-            .unwrap_err();
+        let err =
+            market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(100), now()).unwrap_err();
         assert!(err.to_string().contains("Insufficient liquidity"));
         assert_eq!(acct.cash, dec!(10_000)); // nothing deducted
     }
@@ -842,6 +875,94 @@ mod tests {
     fn cancel_unknown_order_errors() {
         let mut acct = account();
         assert!(cancel_order(&mut acct, 42).is_err());
+    }
+
+    #[test]
+    fn settle_won_pays_dollar_per_share_and_closes() {
+        let mut acct = account();
+        // 100 shares at 0.40 ($40).
+        let asks = [(dec!(0.40), dec!(100))];
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
+
+        let trade = settle_position(&mut acct, TOKEN, dec!(1), now()).unwrap();
+        assert_eq!(trade.kind, OrderKind::Settlement);
+        assert_eq!(trade.price, dec!(1));
+        assert_eq!(trade.realized_pnl, Some(dec!(60))); // (1 - 0.40) * 100
+        assert_eq!(acct.cash, dec!(10_060));
+        assert!(acct.positions.is_empty());
+    }
+
+    #[test]
+    fn settle_lost_pays_zero() {
+        let mut acct = account();
+        let asks = [(dec!(0.40), dec!(100))];
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
+
+        let trade = settle_position(&mut acct, TOKEN, dec!(0), now()).unwrap();
+        assert_eq!(trade.realized_pnl, Some(dec!(-40))); // (0 - 0.40) * 100
+        assert_eq!(acct.cash, dec!(9_960));
+        assert!(acct.positions.is_empty());
+    }
+
+    #[test]
+    fn settle_cancels_open_orders_and_refunds_reserved_cash() {
+        let mut acct = account();
+        let asks = [(dec!(0.40), dec!(100))];
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
+        let quote = Quote {
+            best_bid: Some(dec!(0.38)),
+            best_ask: Some(dec!(0.40)),
+        };
+        // Resting buy reserves $30; resting sell reserves 50 of the 100 shares.
+        limit_buy(
+            &mut acct,
+            TOKEN,
+            &meta(),
+            quote,
+            dec!(0.30),
+            dec!(100),
+            now(),
+        )
+        .unwrap();
+        limit_sell(&mut acct, TOKEN, quote, dec!(0.90), dec!(50), now()).unwrap();
+        assert_eq!(acct.open_orders.len(), 2);
+
+        settle_position(&mut acct, TOKEN, dec!(1), now()).unwrap();
+        // Reserved $30 refunded + 100 shares paid $1 each.
+        assert_eq!(acct.cash, dec!(10_060));
+        assert!(acct.open_orders.is_empty());
+        assert!(acct.positions.is_empty());
+    }
+
+    #[test]
+    fn settle_rejects_unknown_token_and_bad_payout() {
+        let mut acct = account();
+        assert!(settle_position(&mut acct, TOKEN, dec!(1), now()).is_err());
+        let asks = [(dec!(0.40), dec!(100))];
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
+        assert!(settle_position(&mut acct, TOKEN, dec!(1.5), now()).is_err());
+        assert!(settle_position(&mut acct, TOKEN, dec!(-0.1), now()).is_err());
+    }
+
+    #[test]
+    fn position_view_roi_uses_entry_midpoint_basis() {
+        let mut acct = account();
+        let asks = [(dec!(0.40), dec!(100))];
+        let bids = [(dec!(0.38), dec!(100))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(40), now()).unwrap();
+        let mut marks = BTreeMap::new();
+        marks.insert(TOKEN.to_string(), dec!(0.50));
+        let view = portfolio_view(&acct, &marks);
+        // entry mid 0.39, basis $39, upnl $11 → ROI 11/39 ≈ 28.2%
+        let roi = view.positions[0].roi().unwrap();
+        assert_eq!(roi.round_dp(4), dec!(0.2821));
+        // No mark → no ROI.
+        let view = portfolio_view(&acct, &BTreeMap::new());
+        assert!(view.positions[0].roi().is_none());
     }
 
     #[test]

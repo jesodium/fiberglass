@@ -31,6 +31,8 @@ impl std::fmt::Display for TradeSide {
 pub(crate) enum OrderKind {
     Market,
     Limit,
+    /// Resolution payout: the position closed at $1 (won) or $0 (lost).
+    Settlement,
 }
 
 impl std::fmt::Display for OrderKind {
@@ -38,6 +40,7 @@ impl std::fmt::Display for OrderKind {
         match self {
             Self::Market => write!(f, "market"),
             Self::Limit => write!(f, "limit"),
+            Self::Settlement => write!(f, "settle"),
         }
     }
 }
@@ -170,6 +173,23 @@ pub(crate) struct PositionView {
     pub mark_price: Option<Decimal>,
     pub market_value: Option<Decimal>,
     pub unrealized_pnl: Option<Decimal>,
+}
+
+impl PositionView {
+    /// Unrealized return on the entry-midpoint cost basis (the same basis the
+    /// unrealized PnL uses), as a fraction: `0.42` = +42%.
+    pub fn roi(&self) -> Option<Decimal> {
+        let entry = if self.position.entry_midpoint > Decimal::ZERO {
+            self.position.entry_midpoint
+        } else {
+            self.position.avg_price
+        };
+        let basis = entry * self.position.size;
+        if basis <= Decimal::ZERO {
+            return None;
+        }
+        self.unrealized_pnl.map(|u| u / basis)
+    }
 }
 
 #[derive(Debug, Serialize)]

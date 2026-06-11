@@ -287,7 +287,9 @@ pub(crate) async fn tui_check_approvals() -> Result<String> {
         }
     }
 
-    Ok(format!("Approvals: {approved_count}/{total} contracts approved for {owner}"))
+    Ok(format!(
+        "Approvals: {approved_count}/{total} contracts approved for {owner}"
+    ))
 }
 
 /// TUI-friendly approval set — runs all approvals, returns a one-line summary.
@@ -322,5 +324,7 @@ pub(crate) async fn tui_set_approvals() -> Result<String> {
         }
     }
 
-    Ok(format!("✓ {tx_count} approval txns sent — all contracts approved."))
+    Ok(format!(
+        "✓ {tx_count} approval txns sent — all contracts approved."
+    ))
 }

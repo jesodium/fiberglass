@@ -224,6 +224,57 @@ fn binary_u256_vec() -> Vec<U256> {
     DEFAULT_BINARY_SETS.iter().map(|&n| U256::from(n)).collect()
 }
 
+/// TUI entry point: redeem a resolved position on-chain using the configured
+/// wallet. Plain CTF markets redeem both binary index sets; neg-risk markets
+/// go through the adapter with `shares` placed at the token's outcome index.
+pub(crate) async fn tui_redeem(
+    condition_id: &str,
+    neg_risk: bool,
+    shares: Decimal,
+    outcome_index: usize,
+    outcome_count: usize,
+) -> Result<String> {
+    use std::str::FromStr as _;
+    let condition = B256::from_str(condition_id).context("Invalid condition ID")?;
+    let use_proxy = proxy::is_proxy_mode(None)?;
+    let (target, calldata) = if neg_risk {
+        // The adapter burns exact per-outcome amounts; truncate to collateral
+        // precision so the on-chain value never exceeds the held balance.
+        let amount =
+            collateral_to_raw(shares.round_dp_with_strategy(
+                COLLATERAL_DECIMALS,
+                rust_decimal::RoundingStrategy::ToZero,
+            ))?;
+        let mut amounts = vec![U256::ZERO; outcome_count.max(outcome_index + 1)];
+        amounts[outcome_index] = amount;
+        (
+            NEG_RISK_ADAPTER,
+            INegRiskAdapter::redeemPositionsCall {
+                conditionId: condition,
+                amounts,
+            }
+            .abi_encode(),
+        )
+    } else {
+        (
+            CONDITIONAL_TOKENS,
+            IConditionalTokens::redeemPositionsCall {
+                collateralToken: Address::from_str(COLLATERAL_ADDRESS_STR)?,
+                parentCollectionId: B256::default(),
+                conditionId: condition,
+                indexSets: binary_u256_vec(),
+            }
+            .abi_encode(),
+        )
+    };
+    let (tx_hash, block_number) = proxy::send_call(None, use_proxy, target, calldata)
+        .await
+        .context("Redeem failed")?;
+    Ok(format!(
+        "✓ Redeemed on-chain — tx {tx_hash} (block {block_number})"
+    ))
+}
+
 pub async fn execute(
     args: CtfArgs,
     output: OutputFormat,

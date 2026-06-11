@@ -95,6 +95,10 @@ pub(crate) struct Settings {
     pub default_stop_loss_pct: Option<Decimal>,
     /// Default trailing-stop (percent off peak) attached to new positions.
     pub default_trailing_stop_pct: Option<Decimal>,
+    /// When a held market resolves: `true` settles the position to cash
+    /// automatically, `false` waits for a manual claim (`r` on Positions),
+    /// like polymarket.com's redeem button.
+    pub auto_settle: bool,
 }
 
 impl Default for Settings {
@@ -113,6 +117,7 @@ impl Default for Settings {
             default_take_profit_pct: None,
             default_stop_loss_pct: None,
             default_trailing_stop_pct: None,
+            auto_settle: false,
         }
     }
 }

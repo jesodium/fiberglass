@@ -12,8 +12,9 @@ use ratatui::widgets::{
 };
 
 use super::app::{
-    App, COPY_FIELDS, CopyField, CopyModal, ModalField, OnboardingState, OnboardingStep, OrderModal,
-    ResetModal, SETTING_ROWS, SettingRow, SettingsEditModal, View, WalletAction, WalletActionModal,
+    App, COPY_FIELDS, CopyField, CopyModal, ModalField, OnboardingState, OnboardingStep,
+    OrderModal, ResetModal, SETTING_ROWS, SettingRow, SettingsEditModal, View, WalletAction,
+    WalletActionModal,
 };
 use crate::paper::engine;
 use crate::paper::types::{OrderKind, TradeSide};
@@ -141,6 +142,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.view {
         View::Markets => "↑↓/jk move · Enter open · / search · Tab views · q quit",
         View::MarketDetail => "←→ outcome · b buy · s sell · Esc back",
+        View::Positions => "↑↓ move · b buy · s sell · r redeem resolved · Tab views",
         View::Orders => "↑↓ move · c cancel · Tab views",
         View::Copytrade => {
             "n follow · s start · x stop · e enable · d disable · D unfollow · ↑↓ move"
@@ -539,6 +541,7 @@ fn portfolio(f: &mut Frame, app: &App, area: Rect) {
 
 fn positions(f: &mut Frame, app: &App, area: Rect) {
     let marks = marks_snapshot(app);
+    let resolutions = app.data.lock().unwrap().resolutions.clone();
     let acct = app.account.lock().unwrap();
     let view = engine::portfolio_view(&acct, &marks);
     drop(acct);
@@ -548,17 +551,28 @@ fn positions(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, p)| {
             let upnl = p.unrealized_pnl.unwrap_or_default();
+            let mark_cell = match resolutions.get(&p.position.token_id) {
+                Some(r) if r.won => Cell::from("WON $1.00").style(Style::default().fg(GOOD).bold()),
+                Some(_) => Cell::from("LOST $0.00").style(Style::default().fg(BAD).bold()),
+                None => Cell::from(p.mark_price.map(price_pct).unwrap_or_else(|| "—".into())),
+            };
+            let roi_cell = match p.roi() {
+                Some(r) => Cell::from(format!("{:+.1}%", r * Decimal::ONE_HUNDRED))
+                    .style(Style::default().fg(pnl_color(r))),
+                None => Cell::from("—"),
+            };
             Row::new(vec![
-                Cell::from(truncate(&p.position.question, 40)),
-                Cell::from(truncate(&p.position.outcome, 10)),
-                Cell::from(p.position.size.round_dp(2).to_string()),
-                Cell::from(format!("{:.4}", p.position.avg_price)),
-                Cell::from(
-                    p.mark_price
-                        .map(|m| format!("{m:.4}"))
-                        .unwrap_or_else(|| "—".into()),
-                ),
+                Cell::from(truncate(&p.position.question, 36)),
+                Cell::from(truncate(&p.position.outcome, 8)),
+                Cell::from(format!(
+                    "{} ({})",
+                    p.position.size.round_dp(1),
+                    p.market_value.map(money).unwrap_or_else(|| "—".into())
+                )),
+                Cell::from(price_pct(p.position.avg_price)),
+                mark_cell,
                 Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+                roi_cell,
             ])
             .style(zebra(i))
         })
@@ -567,18 +581,27 @@ fn positions(f: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Min(24),
-            Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Min(20),
             Constraint::Length(8),
-            Constraint::Length(8),
+            Constraint::Length(17),
+            Constraint::Length(15),
+            Constraint::Length(15),
             Constraint::Length(10),
+            Constraint::Length(8),
         ],
     )
     .header(header_row(&[
-        "Market", "Outcome", "Shares", "Avg", "Mark", "uPnL",
+        "Market",
+        "Outcome",
+        "Shares (value)",
+        "Avg (prob)",
+        "Mark (prob)",
+        "uPnL",
+        "ROI",
     ]))
-    .block(panel(&format!("Positions ({n})")))
+    .block(panel(&format!(
+        "Positions ({n}) — b buy · s sell · r redeem"
+    )))
     .row_highlight_style(highlight())
     .highlight_symbol("▶ ");
     f.render_stateful_widget(table, area, &mut sel_state(app.positions_sel, n));
@@ -950,6 +973,14 @@ fn render_trading_settings(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, row)| {
             let (label, value) = match row {
                 SettingRow::Mode => ("Trading mode", mode_value.clone()),
+                SettingRow::AutoSettle => (
+                    "Resolved markets",
+                    if s.auto_settle {
+                        "Auto-settle to cash".to_string()
+                    } else {
+                        "Manual claim — r on Positions".to_string()
+                    },
+                ),
                 SettingRow::Field(field) => {
                     let v = app.setting_current_value(*field);
                     let v = if v.is_empty() { "off".to_string() } else { v };
@@ -1119,7 +1150,10 @@ fn render_onboarding(f: &mut Frame, state: &OnboardingState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
-        .title(Span::styled(" POLYMARKET LIVE TRADING ", Style::default().fg(ACCENT).bold()));
+        .title(Span::styled(
+            " POLYMARKET LIVE TRADING ",
+            Style::default().fg(ACCENT).bold(),
+        ));
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
@@ -1138,39 +1172,63 @@ fn render_onboarding(f: &mut Frame, state: &OnboardingState) {
         Line::from(""),
         Line::from("No wallet configured — set one up to trade live.".fg(DIM)),
     ];
-    f.render_widget(Paragraph::new(welcome).alignment(Alignment::Center), chunks[0]);
+    f.render_widget(
+        Paragraph::new(welcome).alignment(Alignment::Center),
+        chunks[0],
+    );
 
     match state.step {
         OnboardingStep::Welcome => {
             let options = vec![
                 Line::from(""),
-                Line::from(Span::styled("  [c]  Create a new wallet    ", Style::default().fg(GOOD).bold())),
-                Line::from(Span::styled("  [i]  Import existing key    ", Style::default().fg(ACCENT).bold())),
+                Line::from(Span::styled(
+                    "  [c]  Create a new wallet    ",
+                    Style::default().fg(GOOD).bold(),
+                )),
+                Line::from(Span::styled(
+                    "  [i]  Import existing key    ",
+                    Style::default().fg(ACCENT).bold(),
+                )),
                 Line::from(""),
-                Line::from(Span::styled("  [Esc]  Skip — browse markets only", Style::default().fg(DIM))),
+                Line::from(Span::styled(
+                    "  [Esc]  Skip — browse markets only",
+                    Style::default().fg(DIM),
+                )),
                 Line::from(""),
             ];
-            f.render_widget(Paragraph::new(options).alignment(Alignment::Center), chunks[1]);
+            f.render_widget(
+                Paragraph::new(options).alignment(Alignment::Center),
+                chunks[1],
+            );
 
-            let tip = vec![
-                Line::from("You can also press Tab/9 to reach Settings and set up a wallet later.".fg(DIM)),
-            ];
+            let tip = vec![Line::from(
+                "You can also press Tab/9 to reach Settings and set up a wallet later.".fg(DIM),
+            )];
             f.render_widget(Paragraph::new(tip).alignment(Alignment::Center), chunks[2]);
         }
         OnboardingStep::ImportKey => {
             let mut lines = vec![
                 Line::from(""),
-                Line::from(Span::styled("  Paste your private key (hex, with or without 0x prefix):", Style::default().fg(DIM))),
+                Line::from(Span::styled(
+                    "  Paste your private key (hex, with or without 0x prefix):",
+                    Style::default().fg(DIM),
+                )),
                 Line::from(""),
                 Line::from(format!("  {}█", state.import_key)),
                 Line::from(""),
             ];
             if let Some(e) = &state.error {
-                lines.push(Line::from(Span::styled(format!("  ✗ {e}"), Style::default().fg(BAD))));
+                lines.push(Line::from(Span::styled(
+                    format!("  ✗ {e}"),
+                    Style::default().fg(BAD),
+                )));
                 lines.push(Line::from(""));
             }
             lines.push(Line::from("  Enter to import · Esc to go back".fg(DIM)));
-            f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), chunks[1]);
+            f.render_widget(
+                Paragraph::new(lines).alignment(Alignment::Center),
+                chunks[1],
+            );
         }
     }
 }
@@ -1182,15 +1240,14 @@ fn render_wallet_action_modal(f: &mut Frame, m: &WalletActionModal) {
     f.render_widget(Clear, area);
     match m.action {
         WalletAction::Create => {
-            let mut lines = vec![
-                Line::from("Create new wallet".bold()),
-                Line::from(""),
-            ];
+            let mut lines = vec![Line::from("Create new wallet".bold()), Line::from("")];
             if m.confirmed {
                 lines.push(Line::from("Generating wallet…".fg(DIM)));
             } else {
                 lines.push(Line::from("This will REPLACE your current wallet.".fg(BAD)));
-                lines.push(Line::from("Make sure you have backed up your existing key.".fg(DIM)));
+                lines.push(Line::from(
+                    "Make sure you have backed up your existing key.".fg(DIM),
+                ));
                 lines.push(Line::from(""));
                 lines.push(Line::from("Press Enter to confirm · Esc to cancel".fg(DIM)));
             }
@@ -1198,7 +1255,10 @@ fn render_wallet_action_modal(f: &mut Frame, m: &WalletActionModal) {
                 .borders(Borders::ALL)
                 .title(" NEW WALLET ".bold())
                 .border_style(Style::default().fg(GOLD));
-            f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: true }), area);
+            f.render_widget(
+                Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+                area,
+            );
         }
         WalletAction::Import => {
             let mut lines = vec![
@@ -1209,7 +1269,10 @@ fn render_wallet_action_modal(f: &mut Frame, m: &WalletActionModal) {
                 Line::from(""),
             ];
             if let Some(e) = &m.error {
-                lines.push(Line::from(Span::styled(e.clone(), Style::default().fg(BAD))));
+                lines.push(Line::from(Span::styled(
+                    e.clone(),
+                    Style::default().fg(BAD),
+                )));
                 lines.push(Line::from(""));
             }
             lines.push(Line::from("Enter to import · Esc to cancel".fg(DIM)));
@@ -1217,7 +1280,10 @@ fn render_wallet_action_modal(f: &mut Frame, m: &WalletActionModal) {
                 .borders(Borders::ALL)
                 .title(" IMPORT WALLET ".bold())
                 .border_style(Style::default().fg(ACCENT));
-            f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: true }), area);
+            f.render_widget(
+                Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+                area,
+            );
         }
     }
 }
@@ -1266,6 +1332,8 @@ fn render_modal(f: &mut Frame, app: &App, m: &OrderModal) {
                 m.field == ModalField::Size,
             ));
         }
+        // The order form never carries a settlement.
+        OrderKind::Settlement => {}
     }
     // Take-profit / stop-loss guard fields on buys (auto-attached on fill).
     if m.side == TradeSide::Buy {
@@ -1584,6 +1652,11 @@ fn short_money(d: Option<Decimal>) -> String {
 /// A probability (0..1) as a percentage, e.g. `0.004 → 0.4%`, `0.612 → 61.2%`.
 fn pct(p: Decimal) -> String {
     format!("{:.1}%", p * Decimal::from(100))
+}
+
+/// A price with its implied probability, e.g. `0.2520 (25.2%)`.
+fn price_pct(p: Decimal) -> String {
+    format!("{:.4} ({})", p, pct(p))
 }
 
 fn status_label(closed: Option<bool>, active: Option<bool>) -> String {

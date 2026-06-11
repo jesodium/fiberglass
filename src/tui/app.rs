@@ -1,5 +1,6 @@
 //! TUI application state and input handling.
 
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +10,7 @@ use polymarket_client_sdk_v2::auth::{LocalSigner, Signer as _};
 use polymarket_client_sdk_v2::types::Decimal;
 use polymarket_client_sdk_v2::{POLYGON, derive_proxy_wallet};
 
-use super::data::{MarketRow, Shared};
+use super::data::{MarketRow, ResolutionInfo, Shared};
 use super::live::{LiveOrder, WalletInfo};
 use crate::config;
 use crate::copytrade::config::CopyTrader;
@@ -17,7 +18,7 @@ use crate::copytrade::engine::CopyEngine;
 use crate::paper::engine as paper_engine;
 use crate::paper::store;
 use crate::paper::types::{
-    MarketMeta, OrderKind, PaperAccount, Quote, TradeSide, default_starting_balance,
+    MarketMeta, OrderKind, PaperAccount, Position, Quote, TradeSide, default_starting_balance,
 };
 use crate::settings::{self, Settings};
 
@@ -142,11 +143,14 @@ pub(crate) struct SettingsEditModal {
 #[derive(Clone, Copy)]
 pub(crate) enum SettingRow {
     Mode,
+    /// Toggle: settle resolved markets automatically vs manual claim.
+    AutoSettle,
     Field(SettingField),
 }
 
-pub(crate) const SETTING_ROWS: [SettingRow; 8] = [
+pub(crate) const SETTING_ROWS: [SettingRow; 9] = [
     SettingRow::Mode,
+    SettingRow::AutoSettle,
     SettingRow::Field(SettingField::Threshold),
     SettingRow::Field(SettingField::Quickbuy),
     SettingRow::Field(SettingField::Quicksell),
@@ -346,6 +350,9 @@ pub(crate) struct App {
     pub status: String,
     /// True in LIVE mode (real wallet + CLOB), false for the paper account.
     pub live: bool,
+    /// Condition IDs already submitted for on-chain redemption this session,
+    /// so auto-settle never double-sends the transaction.
+    pub attempted_redeems: HashSet<String>,
 }
 
 impl App {
@@ -376,7 +383,11 @@ impl App {
             None
         };
         Self {
-            view: if needs_onboarding { View::Onboarding } else { View::Dashboard },
+            view: if needs_onboarding {
+                View::Onboarding
+            } else {
+                View::Dashboard
+            },
             should_quit: false,
             data,
             account,
@@ -403,6 +414,7 @@ impl App {
             wallet_action_modal: None,
             status,
             live,
+            attempted_redeems: HashSet::new(),
         }
     }
 
@@ -414,6 +426,7 @@ impl App {
         if let Some(n) = notice {
             self.status = n;
         }
+        self.tick_settlement();
     }
 
     /// Tokens the data refresher should keep books fresh for.
@@ -591,6 +604,15 @@ impl App {
             KeyCode::Char('s') if self.view == View::MarketDetail => {
                 self.open_modal(TradeSide::Sell)
             }
+            // Trade straight from the Positions tab (paper and live).
+            KeyCode::Char('b') if self.view == View::Positions => {
+                self.open_modal_for_position(TradeSide::Buy)
+            }
+            KeyCode::Char('s') if self.view == View::Positions => {
+                self.open_modal_for_position(TradeSide::Sell)
+            }
+            // Claim a resolved position's payout (manual-claim mode).
+            KeyCode::Char('r') if self.view == View::Positions => self.redeem_selected_position(),
             KeyCode::Char('c') if self.view == View::Orders => self.cancel_selected_order(),
             // Copy-trading controls.
             KeyCode::Char('n') if self.view == View::Copytrade => {
@@ -803,6 +825,15 @@ impl App {
                     self.settings.trading_mode.describe()
                 );
             }
+            SettingRow::AutoSettle => {
+                self.settings.auto_settle = !self.settings.auto_settle;
+                self.persist_settings();
+                self.status = if self.settings.auto_settle {
+                    "Resolved markets now settle to cash automatically.".into()
+                } else {
+                    "Resolved markets now wait for a manual claim (r on Positions).".into()
+                };
+            }
             SettingRow::Field(field) => {
                 let input = self.setting_current_value(*field);
                 self.settings_modal = Some(SettingsEditModal {
@@ -931,6 +962,43 @@ impl App {
             .get(self.detail_token)
             .cloned()
             .unwrap_or_else(|| format!("Outcome {}", self.detail_token + 1));
+        let question = d.question.clone();
+        self.open_modal_with(token_id, question, outcome, side);
+    }
+
+    /// Open the order form for the position selected on the Positions tab.
+    fn open_modal_for_position(&mut self, side: TradeSide) {
+        let Some(p) = self.selected_position() else {
+            self.status = "No position selected.".into();
+            return;
+        };
+        if self
+            .data
+            .lock()
+            .unwrap()
+            .resolutions
+            .contains_key(&p.token_id)
+        {
+            self.status = "Market resolved — press r to redeem instead of trading.".into();
+            return;
+        }
+        self.open_modal_with(p.token_id, p.question, p.outcome, side);
+    }
+
+    /// The position under the Positions-tab cursor. Rows render in
+    /// `portfolio_view` order, i.e. the account's BTreeMap order.
+    fn selected_position(&self) -> Option<Position> {
+        let acct = self.account.lock().unwrap();
+        acct.positions.values().nth(self.positions_sel).cloned()
+    }
+
+    fn open_modal_with(
+        &mut self,
+        token_id: String,
+        question: String,
+        outcome: String,
+        side: TradeSide,
+    ) {
         // Prefill TP/SL on buys from the configured defaults.
         let pct = |v: Option<Decimal>| v.map(|d| d.normalize().to_string()).unwrap_or_default();
         let (tp, sl) = if side == TradeSide::Buy {
@@ -950,7 +1018,7 @@ impl App {
             .map_or(Decimal::ZERO, |p| p.size);
         self.modal = Some(OrderModal {
             token_id,
-            question: d.question.clone(),
+            question,
             outcome,
             side,
             kind: OrderKind::Market,
@@ -1036,6 +1104,7 @@ impl App {
                         m.size = s;
                         m.field = ModalField::Size;
                     }
+                    OrderKind::Settlement => {}
                 }
             }
             TradeSide::Sell => {
@@ -1056,6 +1125,7 @@ impl App {
                         m.size = s;
                         m.field = ModalField::Size;
                     }
+                    OrderKind::Settlement => {}
                 }
             }
         }
@@ -1138,6 +1208,8 @@ impl App {
                         )),
                     }
                 }
+                // The modal only ever builds market/limit orders.
+                (OrderKind::Settlement, _) => unreachable!("settlement is not an order form kind"),
                 (OrderKind::Limit, TradeSide::Sell) => {
                     let price = parse_dec(&m.price)?;
                     let size = parse_dec(&m.size)?;
@@ -1223,6 +1295,7 @@ impl App {
                 let size = Decimal::from_str(m.size.trim()).ok()?;
                 Some(price * size)
             }
+            OrderKind::Settlement => None,
         }
     }
 
@@ -1317,6 +1390,7 @@ impl App {
                     size,
                 }
             }
+            OrderKind::Settlement => unreachable!("settlement is not an order form kind"),
         };
 
         let shared = Arc::clone(&self.data);
@@ -1456,6 +1530,131 @@ impl App {
             "Cancelling live order {}…",
             &order.id[..order.id.len().min(12)]
         );
+    }
+
+    // --- Settlement of resolved markets -------------------------------------
+
+    /// Auto-settle (when the setting is on): every held token whose market
+    /// has resolved converts to cash — paper settles locally, live redeems
+    /// on-chain. Runs each frame; cheap when nothing has resolved.
+    fn tick_settlement(&mut self) {
+        if !self.settings.auto_settle {
+            return;
+        }
+        let resolutions = {
+            let d = self.data.lock().unwrap();
+            if d.resolutions.is_empty() {
+                return;
+            }
+            d.resolutions.clone()
+        };
+        let held: Vec<String> = self
+            .account
+            .lock()
+            .unwrap()
+            .positions
+            .keys()
+            .cloned()
+            .collect();
+        for token_id in held {
+            if let Some(info) = resolutions.get(&token_id) {
+                self.settle_token(&token_id, info.clone());
+            }
+        }
+    }
+
+    /// Manual claim (`r` on Positions): redeem the selected position if its
+    /// market has resolved.
+    fn redeem_selected_position(&mut self) {
+        let Some(p) = self.selected_position() else {
+            self.status = "No position selected.".into();
+            return;
+        };
+        let info = self
+            .data
+            .lock()
+            .unwrap()
+            .resolutions
+            .get(&p.token_id)
+            .cloned();
+        match info {
+            Some(info) => self.settle_token(&p.token_id, info),
+            None => {
+                self.status =
+                    "Market not resolved yet — sell early with s, or wait for resolution.".into();
+            }
+        }
+    }
+
+    /// Convert one resolved position to cash: paper settles in the engine,
+    /// live submits the on-chain redemption.
+    fn settle_token(&mut self, token_id: &str, info: ResolutionInfo) {
+        if self.live {
+            self.spawn_live_redeem(token_id, &info);
+            return;
+        }
+        let result = {
+            let mut acct = self.account.lock().unwrap();
+            paper_engine::settle_position(&mut acct, token_id, info.payout, Utc::now())
+        };
+        match result {
+            Ok(t) => {
+                let _ = store::save(&self.account.lock().unwrap());
+                let _ = crate::guard::clear(token_id);
+                let verdict = if info.won { "WON" } else { "LOST" };
+                let pnl = t.realized_pnl.unwrap_or_default().round_dp(2);
+                self.status = format!(
+                    "[paper] {verdict} — settled {} '{}' at ${} (pnl {pnl})",
+                    t.size.round_dp(2),
+                    t.outcome,
+                    info.payout
+                );
+                let len = self.account.lock().unwrap().positions.len();
+                self.positions_sel = self.positions_sel.min(len.saturating_sub(1));
+            }
+            Err(e) => self.status = format!("Settlement failed: {e}"),
+        }
+    }
+
+    /// Redeem a resolved live position on-chain (costs Polygon gas). Each
+    /// condition is attempted at most once per session; the position itself
+    /// disappears on the next wallet hydrate after the transaction lands.
+    fn spawn_live_redeem(&mut self, token_id: &str, info: &ResolutionInfo) {
+        let Some(condition_id) = info.condition_id.clone() else {
+            self.status =
+                "Resolved, but no condition ID — redeem with `polymarket ctf redeem`.".into();
+            return;
+        };
+        if !self.attempted_redeems.insert(condition_id.clone()) {
+            return;
+        }
+        let shares = self
+            .account
+            .lock()
+            .unwrap()
+            .positions
+            .get(token_id)
+            .map_or(Decimal::ZERO, |p| p.size);
+        let neg_risk = info.neg_risk;
+        let outcome_index = info.outcome_index;
+        let outcome_count = info.outcome_count;
+        let shared = Arc::clone(&self.data);
+        self.status = "Redeeming resolved position on-chain…".into();
+        tokio::spawn(async move {
+            let msg = match crate::commands::ctf::tui_redeem(
+                &condition_id,
+                neg_risk,
+                shares,
+                outcome_index,
+                outcome_count,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => format!("Redeem failed: {e}"),
+            };
+            shared.lock().unwrap().notices.push(msg);
+        });
     }
 
     // --- Copy-trading ------------------------------------------------------
@@ -1668,7 +1867,7 @@ impl App {
                     }
                     _ => {}
                 }
-            },
+            }
         }
     }
 
@@ -1680,7 +1879,8 @@ impl App {
             self.set_onboarding_error(format!("Failed to save wallet: {e}"));
             return;
         }
-        let sig_type = config::resolve_signature_type(None).unwrap_or_else(|_| config::DEFAULT_SIGNATURE_TYPE.to_string());
+        let sig_type = config::resolve_signature_type(None)
+            .unwrap_or_else(|_| config::DEFAULT_SIGNATURE_TYPE.to_string());
         let proxy = derive_proxy_wallet(address, POLYGON).map(|a| a.to_string());
         self.wallet = Some(WalletInfo {
             eoa: address.to_string(),
@@ -1709,7 +1909,9 @@ impl App {
         let signer = match LocalSigner::from_str(key) {
             Ok(s) => s.with_chain_id(Some(POLYGON)),
             Err(_) => {
-                self.set_onboarding_error("Invalid private key. Enter a valid hex key.".to_string());
+                self.set_onboarding_error(
+                    "Invalid private key. Enter a valid hex key.".to_string(),
+                );
                 return;
             }
         };
@@ -1719,7 +1921,8 @@ impl App {
             self.set_onboarding_error(format!("Failed to save wallet: {e}"));
             return;
         }
-        let sig_type = config::resolve_signature_type(None).unwrap_or_else(|_| config::DEFAULT_SIGNATURE_TYPE.to_string());
+        let sig_type = config::resolve_signature_type(None)
+            .unwrap_or_else(|_| config::DEFAULT_SIGNATURE_TYPE.to_string());
         let proxy = derive_proxy_wallet(address, POLYGON).map(|a| a.to_string());
         self.wallet = Some(WalletInfo {
             eoa: address.to_string(),
@@ -1738,9 +1941,7 @@ impl App {
         self.live = true;
         self.onboarding = None;
         self.view = View::Dashboard;
-        self.status = format!(
-            "✓ Wallet imported: {address}. The terminal now shows live state.",
-        );
+        self.status = format!("✓ Wallet imported: {address}. The terminal now shows live state.",);
     }
 
     fn set_onboarding_error(&mut self, msg: String) {
@@ -1754,7 +1955,9 @@ impl App {
 
 impl App {
     fn wallet_action_modal_key(&mut self, key: KeyEvent) {
-        let Some(m) = self.wallet_action_modal.as_mut() else { return };
+        let Some(m) = self.wallet_action_modal.as_mut() else {
+            return;
+        };
         match m.action {
             WalletAction::Create => match key.code {
                 KeyCode::Esc => {
@@ -1859,6 +2062,7 @@ pub(crate) fn modal_fields(kind: OrderKind, side: TradeSide) -> Vec<ModalField> 
     let mut fields = match kind {
         OrderKind::Market => vec![ModalField::Amount],
         OrderKind::Limit => vec![ModalField::Price, ModalField::Size],
+        OrderKind::Settlement => Vec::new(), // never an order form kind
     };
     // Take-profit / stop-loss apply to buys only (they exit a new position).
     if side == TradeSide::Buy {

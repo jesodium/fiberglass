@@ -81,16 +81,27 @@ pub(crate) async fn tui_deposit_status() -> Result<String> {
         let signer = crate::auth::resolve_signer(None)?;
         polymarket_client_sdk_v2::auth::Signer::address(&signer)
     };
-    let request = StatusRequest::builder().address(&address.to_string()).build();
+    let request = StatusRequest::builder()
+        .address(&address.to_string())
+        .build();
     let response = client.status(&request).await?;
     let pending: Vec<_> = response
         .transactions
         .iter()
-        .filter(|t| !matches!(t.status, polymarket_client_sdk_v2::bridge::types::DepositTransactionStatus::Completed))
+        .filter(|t| {
+            !matches!(
+                t.status,
+                polymarket_client_sdk_v2::bridge::types::DepositTransactionStatus::Completed
+            )
+        })
         .collect();
     if pending.is_empty() {
         Ok("No pending deposits.".into())
     } else {
-        Ok(format!("{} pending deposit(s). Run `polymarket bridge status {}` for details.", pending.len(), address))
+        Ok(format!(
+            "{} pending deposit(s). Run `polymarket bridge status {}` for details.",
+            pending.len(),
+            address
+        ))
     }
 }
