@@ -271,18 +271,18 @@ pub(crate) async fn tui_check_approvals() -> Result<String> {
     for target in &targets {
         if target.needs_collateral_allowance {
             total += 1;
-            if let Ok(val) = collateral.allowance(owner, target.address).call().await {
-                if val > U256::ZERO {
-                    approved_count += 1;
-                }
+            if let Ok(val) = collateral.allowance(owner, target.address).call().await
+                && val > U256::ZERO
+            {
+                approved_count += 1;
             }
         }
         if target.needs_ctf_operator {
             total += 1;
-            if let Ok(val) = ctf.isApprovedForAll(owner, target.address).call().await {
-                if val {
-                    approved_count += 1;
-                }
+            if let Ok(val) = ctf.isApprovedForAll(owner, target.address).call().await
+                && val
+            {
+                approved_count += 1;
             }
         }
     }

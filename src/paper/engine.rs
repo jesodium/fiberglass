@@ -523,6 +523,7 @@ fn midpoint(
 /// Record a buy fill. Caller must already have deducted the cash.
 /// `entry_midpoint` is the bid-ask midpoint at fill time, used so that
 /// unrealized PnL tracks market movement rather than the spread.
+#[allow(clippy::too_many_arguments)]
 fn record_buy(
     account: &mut PaperAccount,
     token_id: &str,

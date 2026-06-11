@@ -24,6 +24,4 @@ e2e-output/
 e2e-*.log
 scripts/e2e.sh
 
-CLAUDE.md
-
 .claude

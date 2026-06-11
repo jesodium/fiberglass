@@ -2006,13 +2006,9 @@ fn friendly_live_order_error(e: anyhow::Error) -> String {
             "{brief}. The CLOB doesn't recognize this wallet for trading. Run `polymarket approve set` first, then deposit USDC.e (Polygon) to your proxy wallet from Settings tab."
         )
     } else if msg.contains("insufficient balance") {
-        format!(
-            "Live order rejected — not enough USDC.e (buys) or shares (sells) in your wallet. Deposit USDC.e via `polymarket bridge deposit`."
-        )
+        "Live order rejected — not enough USDC.e (buys) or shares (sells) in your wallet. Deposit USDC.e via `polymarket bridge deposit`.".to_string()
     } else if msg.contains("insufficient allowance") {
-        format!(
-            "Live order rejected — contract not approved. Run `polymarket approve set` and try again."
-        )
+        "Live order rejected — contract not approved. Run `polymarket approve set` and try again.".to_string()
     } else {
         format!("Live order FAILED: {e}")
     }

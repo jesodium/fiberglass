@@ -75,6 +75,7 @@ pub(crate) async fn tui_deposit_address() -> Result<String> {
 }
 
 /// TUI-friendly deposit status check — returns a one-line summary.
+#[allow(dead_code)]
 pub(crate) async fn tui_deposit_status() -> Result<String> {
     let client = bridge::Client::default();
     let address = {
@@ -82,7 +83,7 @@ pub(crate) async fn tui_deposit_status() -> Result<String> {
         polymarket_client_sdk_v2::auth::Signer::address(&signer)
     };
     let request = StatusRequest::builder()
-        .address(&address.to_string())
+        .address(address.to_string())
         .build();
     let response = client.status(&request).await?;
     let pending: Vec<_> = response
