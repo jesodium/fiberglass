@@ -9,6 +9,7 @@ mod settings;
 mod shell;
 mod trade;
 mod tui;
+mod updater;
 
 use std::process::ExitCode;
 
@@ -89,10 +90,20 @@ enum Commands {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let output = cli.output;
+    let is_tui = matches!(cli.command, Commands::Tui { .. } | Commands::Shell);
+    let is_upgrade = matches!(cli.command, Commands::Upgrade);
+
+    if !is_upgrade {
+        updater::refresh_cache_if_stale();
+    }
 
     if let Err(e) = run(cli).await {
         output::print_error(&e, output);
         return ExitCode::FAILURE;
+    }
+
+    if !is_tui && !is_upgrade && let Some(tag) = updater::check_update() {
+        eprintln!("\nUpdate {tag} available — run `polymarket upgrade` to install.");
     }
 
     ExitCode::SUCCESS

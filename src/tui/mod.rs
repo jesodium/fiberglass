@@ -94,12 +94,18 @@ pub(crate) async fn run(paper: bool) -> Result<()> {
 
     let mut terminal = setup_terminal()?;
     let res = event_loop(&mut terminal, &mut app).await;
+    let run_upgrade = app.run_upgrade;
     restore_terminal(&mut terminal)?;
 
     // Persist only the paper account; live state lives on-chain / at the CLOB.
     if paper {
         let _ = store::save(&account.lock().unwrap());
     }
+
+    if run_upgrade {
+        return crate::commands::upgrade::execute();
+    }
+
     res
 }
 

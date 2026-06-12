@@ -353,6 +353,10 @@ pub(crate) struct App {
     /// Condition IDs already submitted for on-chain redemption this session,
     /// so auto-settle never double-sends the transaction.
     pub attempted_redeems: HashSet<String>,
+    /// Latest release tag when a newer version exists; `None` if up to date.
+    pub update_available: Option<String>,
+    /// Set by the `U` key; causes `tui::run` to execute the upgrade after exit.
+    pub run_upgrade: bool,
 }
 
 impl App {
@@ -362,7 +366,11 @@ impl App {
         copy_engine: CopyEngine,
         live: bool,
     ) -> Self {
-        let status = if live {
+        crate::updater::refresh_cache_if_stale();
+        let update_available = crate::updater::check_update();
+        let status = if let Some(ref tag) = update_available {
+            format!("Update {tag} available — press U to install.")
+        } else if live {
             "LIVE mode — real funds. Press ? for help, b/s on a market to trade.".to_string()
         } else {
             "PAPER mode — simulated. Press ? for help.".to_string()
@@ -415,6 +423,8 @@ impl App {
             status,
             live,
             attempted_redeems: HashSet::new(),
+            update_available,
+            run_upgrade: false,
         }
     }
 
@@ -728,6 +738,11 @@ impl App {
                         error: None,
                     });
                 }
+            }
+            KeyCode::Char('U') if self.update_available.is_some() => {
+                self.status = "Quitting to run upgrade…".into();
+                self.should_quit = true;
+                self.run_upgrade = true;
             }
             _ => {}
         }
