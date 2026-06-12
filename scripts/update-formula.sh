@@ -8,11 +8,14 @@ TAG="${1:?Usage: $0 <version-tag>  (e.g. v0.1.0)}"
 VERSION="${TAG#v}"  # strip leading 'v'
 
 REPO="jesodium/polymarket-cli"
-CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/checksums.txt"
 FORMULA="Formula/polymarket.rb"
 
 echo "Fetching checksums for ${TAG}..."
-CHECKSUMS=$(curl -sSfL "$CHECKSUMS_URL")
+# Fetch via authenticated gh so this works for a private repo too (the public
+# releases/download URL 404s without auth). Requires GH_TOKEN in the env.
+DL_DIR="$(mktemp -d)"
+gh release download "$TAG" --repo "$REPO" --pattern checksums.txt --dir "$DL_DIR"
+CHECKSUMS=$(cat "${DL_DIR}/checksums.txt")
 
 get_sha() {
   local target="$1"

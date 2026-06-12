@@ -103,6 +103,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/update-formula.sh ${RELEASE_TAG}
 
       - name: Sync Cargo.toml version
