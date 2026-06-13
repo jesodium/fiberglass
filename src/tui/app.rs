@@ -1148,7 +1148,13 @@ impl App {
                 }
                 let pct = presets[m.preset_idx % presets.len()];
                 m.preset_idx += 1;
-                let shares = (m.held * pct / Decimal::ONE_HUNDRED).round_dp(2);
+                // 100% sells the exact held size; rounding would leave a dust
+                // residual that keeps the position alive showing 0.0 shares.
+                let shares = if pct >= Decimal::ONE_HUNDRED {
+                    m.held
+                } else {
+                    (m.held * pct / Decimal::ONE_HUNDRED).round_dp(2)
+                };
                 let s = shares.normalize().to_string();
                 match m.kind {
                     OrderKind::Market => {

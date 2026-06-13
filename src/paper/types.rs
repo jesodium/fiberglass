@@ -176,15 +176,10 @@ pub(crate) struct PositionView {
 }
 
 impl PositionView {
-    /// Unrealized return on the entry-midpoint cost basis (the same basis the
-    /// unrealized PnL uses), as a fraction: `0.42` = +42%.
+    /// Unrealized return on the actual cost basis (avg fill price), as a
+    /// fraction: `0.42` = +42%. Matches the basis the realized PnL uses.
     pub fn roi(&self) -> Option<Decimal> {
-        let entry = if self.position.entry_midpoint > Decimal::ZERO {
-            self.position.entry_midpoint
-        } else {
-            self.position.avg_price
-        };
-        let basis = entry * self.position.size;
+        let basis = self.position.avg_price * self.position.size;
         if basis <= Decimal::ZERO {
             return None;
         }

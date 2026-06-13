@@ -166,13 +166,10 @@ pub(crate) async fn refresher(
                     && let Ok(levels) = quotes::fetch_book(&client, token).await
                 {
                     let q = levels.quote();
-                    let mid = match (q.best_bid, q.best_ask) {
-                        (Some(b), Some(a)) => Some((b + a) / Decimal::from(2)),
-                        (Some(b), None) => Some(b),
-                        (None, Some(a)) => Some(a),
-                        (None, None) => None,
-                    };
-                    if let Some(m) = mid {
+                    // Mark a long at the bid — the price it can actually exit
+                    // at — so unrealized PnL matches what a sell will realize.
+                    // Fall back to the ask only when the book has no bids.
+                    if let Some(m) = q.best_bid.or(q.best_ask) {
                         marks.insert(tid.clone(), m);
                     }
                     books.insert(

@@ -18,7 +18,7 @@ use super::app::{
 };
 use super::data::ResolutionInfo;
 use crate::paper::engine;
-use crate::paper::types::{OrderKind, PositionView, TradeSide};
+use crate::paper::types::{OrderKind, PositionView, Trade, TradeSide};
 
 const ACCENT: Color = Color::Cyan;
 const GOOD: Color = Color::Rgb(63, 185, 80); // green
@@ -645,11 +645,8 @@ fn redeemable_header_row() -> Row<'static> {
 /// verdict leads the Market column.
 fn redeemable_row(p: &PositionView, info: &ResolutionInfo, zi: usize) -> Row<'static> {
     let size = p.position.size;
-    let entry = if p.position.entry_midpoint > Decimal::ZERO {
-        p.position.entry_midpoint
-    } else {
-        p.position.avg_price
-    };
+    // Basis is actual cost (avg fill), matching the settlement realized PnL.
+    let entry = p.position.avg_price;
     let payout = info.payout;
     let value = payout * size;
     let upnl = (payout - entry) * size;
@@ -811,9 +808,10 @@ fn history(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let acct = app.account.lock().unwrap();
-    // Position history: only closed positions — every sell carries a realized
-    // PnL, whether it closed by resolution (Settlement) or an early sale.
-    let mut closed: Vec<_> = acct
+    // Two views of the same trade log: every fill (the order log) and the
+    // subset that closed a position (carries a realized PnL).
+    let orders: Vec<_> = acct.trades.iter().rev().cloned().collect();
+    let closed: Vec<_> = acct
         .trades
         .iter()
         .rev()
@@ -821,46 +819,142 @@ fn history(f: &mut Frame, app: &App, area: Rect) {
         .cloned()
         .collect();
     drop(acct);
+
+    // Stack the order log on top of the closed-position history.
+    let halves = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    orders_table(f, &orders, app.history_scroll, halves[0]);
+    positions_table(f, &closed, app.history_scroll, halves[1]);
+}
+
+/// `size (value)` — share count with its cash value in parens.
+fn size_value(size: Decimal, notional: Decimal) -> String {
+    format!("{} ({})", size.round_dp(1), money(notional))
+}
+
+/// Every fill, buy or sell, newest first.
+fn orders_table(f: &mut Frame, orders: &[Trade], scroll: usize, area: Rect) {
+    let total = orders.len();
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new("No orders yet — fills show here.".fg(DIM)).block(panel("Orders")),
+            area,
+        );
+        return;
+    }
+    let visible = area.height.saturating_sub(3) as usize;
+    let start = scroll.min(total.saturating_sub(1));
+    let rows: Vec<Row> = orders
+        .iter()
+        .skip(start)
+        .take(visible)
+        .enumerate()
+        .map(|(i, t)| {
+            let (side, scolor) = match t.side {
+                TradeSide::Buy => ("BUY", GOOD),
+                TradeSide::Sell => ("SELL", BAD),
+            };
+            Row::new(vec![
+                Cell::from(t.timestamp.format("%m-%d %H:%M").to_string()),
+                Cell::from(side).style(Style::default().fg(scolor).bold()),
+                Cell::from(truncate(&t.question, 30)),
+                Cell::from(truncate(&t.outcome, 6)),
+                Cell::from(size_value(t.size, t.notional)),
+                Cell::from(format!("{:.2}", t.price)),
+                Cell::from(t.kind.to_string()).style(Style::default().fg(DIM)),
+            ])
+            .style(zebra(i))
+        })
+        .collect();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(11),
+            Constraint::Length(5),
+            Constraint::Min(18),
+            Constraint::Length(6),
+            Constraint::Length(16),
+            Constraint::Length(6),
+            Constraint::Length(8),
+        ],
+    )
+    .header(header_row(&[
+        "Time",
+        "Side",
+        "Market",
+        "Out",
+        "Size (Value)",
+        "Price",
+        "Kind",
+    ]))
+    .block(panel(&format!("Orders ({total}) — ↑↓ scroll")));
+    f.render_widget(table, area);
+}
+
+/// Closed positions — every sell carries a realized PnL, whether it closed by
+/// resolution (Settlement) or an early sale.
+fn positions_table(f: &mut Frame, closed: &[Trade], scroll: usize, area: Rect) {
     let total = closed.len();
     if total == 0 {
         f.render_widget(
             Paragraph::new(
                 "No closed positions yet — resolved or sold positions show here.".fg(DIM),
             )
-            .block(panel("Position History")),
+            .block(panel("Positions")),
             area,
         );
         return;
     }
     let visible = area.height.saturating_sub(3) as usize;
-    let start = app.history_scroll.min(total.saturating_sub(1));
-    closed = closed.into_iter().skip(start).take(visible).collect();
+    let start = scroll.min(total.saturating_sub(1));
     let rows: Vec<Row> = closed
         .iter()
+        .skip(start)
+        .take(visible)
         .enumerate()
         .map(|(i, t)| {
             let pnl_val = t.realized_pnl.unwrap_or_default();
-            let (verdict, vcolor) = if pnl_val > Decimal::ZERO {
-                ("WON", GOOD)
+            // Resolved markets read WON/LOST by payout; early sales read SOLD,
+            // coloured green for profit and red for loss.
+            let (verdict, vcolor) = if t.kind == OrderKind::Settlement {
+                if pnl_val >= Decimal::ZERO {
+                    ("WON", GOOD)
+                } else {
+                    ("LOST", BAD)
+                }
+            } else if pnl_val > Decimal::ZERO {
+                ("SOLD", GOOD)
             } else if pnl_val < Decimal::ZERO {
-                ("LOST", BAD)
+                ("SOLD", BAD)
             } else {
-                ("FLAT", DIM)
+                ("SOLD", DIM)
             };
-            let via = if t.kind == OrderKind::Settlement {
-                "Resolved"
+            // Cost basis = exit notional minus realized PnL; entry = basis/size.
+            let basis = t.notional - pnl_val;
+            let entry_cell = if t.size > Decimal::ZERO {
+                Cell::from(format!("{:.2}", basis / t.size))
             } else {
-                "Sold"
+                Cell::from("—")
+            };
+            let roi_cell = if basis > Decimal::ZERO {
+                let r = pnl_val / basis * Decimal::ONE_HUNDRED;
+                Cell::from(format!("{r:+.1}%")).style(Style::default().fg(pnl_color(pnl_val)))
+            } else {
+                Cell::from("—")
             };
             Row::new(vec![
                 Cell::from(t.timestamp.format("%m-%d %H:%M").to_string()),
                 Cell::from(verdict).style(Style::default().fg(vcolor).bold()),
                 Cell::from(truncate(&t.question, 30)),
                 Cell::from(truncate(&t.outcome, 6)),
-                Cell::from(t.size.round_dp(1).to_string()),
+                Cell::from(size_value(t.size, t.notional)),
+                entry_cell,
                 Cell::from(format!("{:.2}", t.price)),
                 Cell::from(signed_money(pnl_val)).style(Style::default().fg(pnl_color(pnl_val))),
-                Cell::from(via).style(Style::default().fg(DIM)),
+                roi_cell,
             ])
             .style(zebra(i))
         })
@@ -872,16 +966,25 @@ fn history(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(6),
             Constraint::Min(18),
             Constraint::Length(6),
-            Constraint::Length(8),
+            Constraint::Length(16),
+            Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(10),
             Constraint::Length(9),
         ],
     )
     .header(header_row(&[
-        "Time", "Result", "Market", "Out", "Size", "Exit", "PnL", "Via",
+        "Time",
+        "Result",
+        "Market",
+        "Out",
+        "Size (Value)",
+        "Entry",
+        "Exit",
+        "PnL",
+        "ROI",
     ]))
-    .block(panel(&format!("Position History ({total}) — ↑↓ scroll")));
+    .block(panel(&format!("Positions ({total}) — ↑↓ scroll")));
     f.render_widget(table, area);
 }
 

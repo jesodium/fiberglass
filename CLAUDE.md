@@ -18,10 +18,11 @@ Source cargo env if binary not found: `source ~/.cargo/env`
 
 ## Architecture
 
-**polymarket-cli** is a Rust trading terminal for Polymarket. Two entry points share the same core:
+**polymarket-cli** is a Rust trading terminal for Polymarket. Three entry points share the same core (all dispatched from `main.rs`):
 
 1. **TUI** (`tui/`) — primary interface; 9 tabs, async render loop, background refresh
-2. **CLI** (`commands/`) — 20+ subcommands dispatched from `main.rs`
+2. **CLI** (`commands/`) — 20+ subcommands
+3. **Shell** (`shell.rs`) — line-based interactive REPL that parses input into the same CLI subcommands
 
 ### Module Map
 
@@ -33,12 +34,17 @@ Source cargo env if binary not found: `source ~/.cargo/env`
 | `src/tui/live.rs` | wallet/balance polling |
 | `src/paper/engine.rs` | paper order fills against live quotes |
 | `src/paper/store.rs` | JSON persistence for paper account |
-| `src/paper/types.rs` | paper account, positions, fills |
+| `src/paper/quotes.rs` | live order-book/quote feed for the simulator (unauthenticated CLOB/Gamma) |
+| `src/paper/types.rs` | paper account, positions, trades (fills) |
+| `src/trade.rs` | live order placement — shared by the TUI order modal and copy-trade engine |
 | `src/copytrade/engine.rs` | mirrors trades from followed wallets (polls every 15s) |
+| `src/copytrade/config.rs` | followed-trader roster + per-trader sizing/filter rules (`copytrades.json`) |
 | `src/guard.rs` | per-token TP/SL/trailing-stop evaluation |
 | `src/auth.rs` | signer factory (private key → alloy signer + provider) |
 | `src/config.rs` | wallet config: path, sig type (EOA/proxy/Gnosis), key storage |
 | `src/settings.rs` | trading mode presets, quickbuy/quicksell, slippage |
+| `src/shell.rs` | line-based interactive REPL (`Commands::Shell`) |
+| `src/updater.rs` | self-update check against GitHub releases (`upgrade` command) |
 | `src/output/` | table (`tabled`) or JSON formatters controlled by `--output` flag |
 
 ### Data Flow (TUI)

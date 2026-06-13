@@ -402,12 +402,9 @@ pub(crate) fn portfolio_view(
         .map(|p| {
             let mark = marks.get(&p.token_id).copied();
             let value = mark.map(|m| m * p.size);
-            let entry = if p.entry_midpoint > Decimal::ZERO {
-                p.entry_midpoint
-            } else {
-                p.avg_price
-            };
-            let upnl = mark.map(|m| (m - entry) * p.size);
+            // Basis is actual cost (avg fill). With the mark at the bid, this
+            // makes unrealized PnL equal what selling now would realize.
+            let upnl = mark.map(|m| (m - p.avg_price) * p.size);
             positions_value += value.unwrap_or(Decimal::ZERO);
             unrealized += upnl.unwrap_or(Decimal::ZERO);
             PositionView {
@@ -609,7 +606,9 @@ fn record_sell(
         notional: shares * price,
         realized_pnl: Some(realized),
     };
-    if position.size == Decimal::ZERO {
+    // Close on exact zero or sub-penny dust (rounded sell sizes can leave a
+    // residual like 0.003 that would otherwise linger showing 0.0 shares).
+    if position.size <= Decimal::new(1, 2) {
         account.positions.remove(token_id);
     }
     account.trades.push(trade.clone());
@@ -950,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn position_view_roi_uses_entry_midpoint_basis() {
+    fn position_view_roi_uses_cost_basis() {
         let mut acct = account();
         let asks = [(dec!(0.40), dec!(100))];
         let bids = [(dec!(0.38), dec!(100))];
@@ -958,9 +957,9 @@ mod tests {
         let mut marks = BTreeMap::new();
         marks.insert(TOKEN.to_string(), dec!(0.50));
         let view = portfolio_view(&acct, &marks);
-        // entry mid 0.39, basis $39, upnl $11 → ROI 11/39 ≈ 28.2%
+        // avg fill 0.40, basis $40, upnl $10 → ROI 10/40 = 25%
         let roi = view.positions[0].roi().unwrap();
-        assert_eq!(roi.round_dp(4), dec!(0.2821));
+        assert_eq!(roi.round_dp(4), dec!(0.25));
         // No mark → no ROI.
         let view = portfolio_view(&acct, &BTreeMap::new());
         assert!(view.positions[0].roi().is_none());
@@ -978,8 +977,8 @@ mod tests {
         let view = portfolio_view(&acct, &marks);
         assert_eq!(view.cash, dec!(9_960));
         assert_eq!(view.positions_value, dec!(50));
-        // entry_midpoint = (0.38 + 0.40) / 2 = 0.39 → upnl = (0.50 - 0.39) * 100 = 11
-        assert_eq!(view.unrealized_pnl, dec!(11));
+        // avg fill 0.40 → upnl = (0.50 - 0.40) * 100 = 10
+        assert_eq!(view.unrealized_pnl, dec!(10));
         assert_eq!(view.equity, dec!(10_010));
         assert_eq!(view.roi_pct, dec!(0.10));
     }
