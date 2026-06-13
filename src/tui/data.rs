@@ -166,10 +166,16 @@ pub(crate) async fn refresher(
                     && let Ok(levels) = quotes::fetch_book(&client, token).await
                 {
                     let q = levels.quote();
-                    // Mark a long at the bid — the price it can actually exit
-                    // at — so unrealized PnL matches what a sell will realize.
-                    // Fall back to the ask only when the book has no bids.
-                    if let Some(m) = q.best_bid.or(q.best_ask) {
+                    // Mark at the bid-ask midpoint so the TUI matches the
+                    // `paper portfolio` command (which marks at the CLOB
+                    // midpoint). Fall back to whichever side exists.
+                    let mid = match (q.best_bid, q.best_ask) {
+                        (Some(b), Some(a)) => Some((b + a) / Decimal::from(2)),
+                        (Some(b), None) => Some(b),
+                        (None, Some(a)) => Some(a),
+                        (None, None) => None,
+                    };
+                    if let Some(m) = mid {
                         marks.insert(tid.clone(), m);
                     }
                     books.insert(
