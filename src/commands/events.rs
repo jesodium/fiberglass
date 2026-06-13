@@ -73,7 +73,11 @@ pub async fn execute(client: &gamma::Client, args: EventsArgs, output: OutputFor
             ascending,
             tag,
         } => {
-            let resolved_closed = closed.or_else(|| active.map(|a| !a));
+            // Gamma's `/events` defaults `closed` to true when the param is
+            // omitted (contrary to its docs), so a flagless `events list`
+            // would return only settled events. Default to open events unless
+            // the user explicitly narrows it via --closed/--active.
+            let resolved_closed = closed.or_else(|| active.map(|a| !a)).or(Some(false));
 
             let request = EventsRequest::builder()
                 .limit(limit)

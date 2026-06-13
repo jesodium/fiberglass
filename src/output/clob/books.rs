@@ -35,8 +35,10 @@ pub fn print_order_book(
                 println!("No bids.");
             } else {
                 println!("Bids:");
-                let rows: Vec<Row> = result
-                    .bids
+                // API returns bids ascending; show best (highest) bid first.
+                let mut bids: Vec<_> = result.bids.iter().collect();
+                bids.sort_by_key(|o| std::cmp::Reverse(o.price));
+                let rows: Vec<Row> = bids
                     .iter()
                     .map(|o| Row {
                         price: o.price.to_string(),
@@ -53,8 +55,10 @@ pub fn print_order_book(
                 println!("No asks.");
             } else {
                 println!("Asks:");
-                let rows: Vec<Row> = result
-                    .asks
+                // API returns asks descending; show best (lowest) ask first.
+                let mut asks: Vec<_> = result.asks.iter().collect();
+                asks.sort_by_key(|o| o.price);
+                let rows: Vec<Row> = asks
                     .iter()
                     .map(|o| Row {
                         price: o.price.to_string(),

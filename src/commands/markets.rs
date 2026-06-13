@@ -88,7 +88,11 @@ pub async fn execute(
             order,
             ascending,
         } => {
-            let resolved_closed = closed.or_else(|| active.map(|a| !a));
+            // Gamma's `/markets` defaults `closed` to true when the param is
+            // omitted (contrary to its docs), so a flagless `markets list`
+            // would return only settled markets. Default to open markets unless
+            // the user explicitly narrows it via --closed/--active.
+            let resolved_closed = closed.or_else(|| active.map(|a| !a)).or(Some(false));
 
             let request = MarketsRequest::builder()
                 .limit(limit)
