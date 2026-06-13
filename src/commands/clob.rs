@@ -26,6 +26,11 @@ use polymarket_client_sdk_v2::clob::types::{
 };
 use polymarket_client_sdk_v2::types::{B256, Decimal, U256};
 
+/// CLOB error message returned when a submitted order was signed for an
+/// outdated protocol version (issue #65). The SDK uses the same marker for its
+/// single-order auto-retry; we match on it for the batch path.
+const ORDER_VERSION_MISMATCH_ERROR: &str = "order_version_mismatch";
+
 #[derive(Args)]
 pub struct ClobArgs {
     #[command(subcommand)]
@@ -696,7 +701,10 @@ pub async fn execute(
             let size_dec =
                 Decimal::from_str(&size).map_err(|_| anyhow::anyhow!("Invalid size: {size}"))?;
 
-            let order = client
+            // `build_sign_and_post` auto-retries once on `order_version_mismatch`
+            // by re-resolving the CLOB protocol version and re-signing (issue
+            // #65); a manual `post_orders` would surface the 400 instead.
+            let result = client
                 .limit_order()
                 .token_id(parse_token_id(&token)?)
                 .side(Side::from(side))
@@ -704,13 +712,8 @@ pub async fn execute(
                 .size(size_dec)
                 .order_type(OrderType::from(order_type))
                 .post_only(post_only)
-                .build()
+                .build_sign_and_post(&signer)
                 .await?;
-            let signed_order = client.sign(&signer, order).await?;
-            let mut results = client.post_orders(vec![signed_order]).await?;
-            let result = results
-                .pop()
-                .ok_or_else(|| anyhow::anyhow!("Order submission returned no result"))?;
             print_post_order_result(&result, output)?;
         }
 
@@ -737,7 +740,8 @@ pub async fn execute(
             let sdk_side = Side::from(side);
             let sdk_order_type = OrderType::from(order_type);
 
-            let mut signed_orders = Vec::with_capacity(token_ids.len());
+            // Parse and validate every leg up front so a retry only rebuilds.
+            let mut specs = Vec::with_capacity(token_ids.len());
             for ((token_id, price_str), size_str) in
                 token_ids.into_iter().zip(price_strs).zip(size_strs)
             {
@@ -745,21 +749,41 @@ pub async fn execute(
                     .map_err(|_| anyhow::anyhow!("Invalid price: {price_str}"))?;
                 let size_dec = Decimal::from_str(size_str)
                     .map_err(|_| anyhow::anyhow!("Invalid size: {size_str}"))?;
-
-                let order = client
-                    .limit_order()
-                    .token_id(token_id)
-                    .side(sdk_side)
-                    .price(price_dec)
-                    .size(size_dec)
-                    .order_type(sdk_order_type.clone())
-                    .build()
-                    .await?;
-                signed_orders.push(client.sign(&signer, order).await?);
+                specs.push((token_id, price_dec, size_dec));
             }
 
-            let results = client.post_orders(signed_orders).await?;
-            print_post_orders_result(&results, output)?;
+            // The SDK's single-order helper auto-retries on a protocol-version
+            // bump, but the batch `post_orders` does not (issue #65). Mirror that
+            // here: on `order_version_mismatch` the failed post refreshes the
+            // cached version, so rebuild + re-sign + repost once.
+            for attempt in 0..2 {
+                let mut signed_orders = Vec::with_capacity(specs.len());
+                for (token_id, price_dec, size_dec) in &specs {
+                    let order = client
+                        .limit_order()
+                        .token_id(*token_id)
+                        .side(sdk_side)
+                        .price(*price_dec)
+                        .size(*size_dec)
+                        .order_type(sdk_order_type.clone())
+                        .build()
+                        .await?;
+                    signed_orders.push(client.sign(&signer, order).await?);
+                }
+
+                match client.post_orders(signed_orders).await {
+                    Ok(results) => {
+                        print_post_orders_result(&results, output)?;
+                        break;
+                    }
+                    Err(e)
+                        if attempt == 0 && e.to_string().contains(ORDER_VERSION_MISMATCH_ERROR) =>
+                    {
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
         }
 
         ClobCommand::MarketOrder {
@@ -796,19 +820,17 @@ pub async fn execute(
                 Amount::usdc(amount_dec)?
             };
 
-            let order = client
+            // `build_sign_and_post` auto-retries once on `order_version_mismatch`
+            // by re-resolving the CLOB protocol version and re-signing (issue
+            // #65); a manual `post_orders` would surface the 400 instead.
+            let result = client
                 .market_order()
                 .token_id(parse_token_id(&token)?)
                 .side(sdk_side)
                 .amount(parsed_amount)
                 .order_type(OrderType::from(order_type))
-                .build()
+                .build_sign_and_post(&signer)
                 .await?;
-            let signed_order = client.sign(&signer, order).await?;
-            let mut results = client.post_orders(vec![signed_order]).await?;
-            let result = results
-                .pop()
-                .ok_or_else(|| anyhow::anyhow!("Order submission returned no result"))?;
             print_post_order_result(&result, output)?;
         }
 
