@@ -5,6 +5,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versions match the git
 tags. The section matching a release tag is published as that release's notes
 (see `.github/workflows/release.yml`).
 
+## [Unreleased]
+
+### Fixed
+- TUI no longer shows misleading $0.00 PnL / zeroed equity while quotes are
+  still loading. Marks-dependent figures (positions uPnL/value, dashboard and
+  portfolio equity/uPnL/ROI) render "loading…" until the first quote refresh
+  completes.
+
 ## [0.1.9] - 2026-06-13
 
 ### Added

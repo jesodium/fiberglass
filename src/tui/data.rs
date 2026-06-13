@@ -201,7 +201,6 @@ pub(crate) async fn refresher(
                     }
                     d.marks.insert(k.clone(), *v);
                 }
-                d.last_refresh = Some(Utc::now());
             }
 
             // Evaluate TP/SL guards against the fresh books and exit positions
@@ -215,6 +214,10 @@ pub(crate) async fn refresher(
                 &mut guard_peaks,
             );
         }
+
+        // Mark one full refresh pass complete (even with nothing to watch), so
+        // the UI can tell "still loading" from "loaded, nothing to show".
+        shared.lock().unwrap().last_refresh = Some(Utc::now());
 
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }

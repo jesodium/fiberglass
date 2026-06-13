@@ -173,6 +173,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn dashboard(f: &mut Frame, app: &App, area: Rect) {
     let marks = marks_snapshot(app);
+    let loading = data_loading(app);
     let acct = app.account.lock().unwrap();
     let view = engine::portfolio_view(&acct, &marks);
     let daily = daily_pnl(&acct);
@@ -193,7 +194,13 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Ratio(1, 4); 4])
         .split(rows[0]);
 
-    metric_card(f, cards[0], "Portfolio Value", &money(view.equity), ACCENT);
+    metric_card(
+        f,
+        cards[0],
+        "Portfolio Value",
+        &loading_money(view.equity, loading),
+        if loading { DIM } else { ACCENT },
+    );
     metric_card(f, cards[1], "Cash Balance", &money(view.cash), Color::White);
     metric_card(
         f,
@@ -207,8 +214,8 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
         f,
         cards[3],
         "Total PnL",
-        &signed_money(total),
-        pnl_color(total),
+        &loading_signed(total, loading),
+        if loading { DIM } else { pnl_color(total) },
     );
 
     // Bottom: counters + recent trades.
@@ -221,9 +228,19 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
         kv_line("Open Positions", &positions.to_string()),
         kv_line("Open Orders", &open_orders.to_string()),
         kv_line("Copy Followers", &following.to_string()),
-        kv_line("ROI", &format!("{}%", view.roi_pct)),
+        kv_line(
+            "ROI",
+            &if loading {
+                LOADING.into()
+            } else {
+                format!("{}%", view.roi_pct)
+            },
+        ),
         kv_line("Realized PnL", &signed_money(view.realized_pnl)),
-        kv_line("Unrealized PnL", &signed_money(view.unrealized_pnl)),
+        kv_line(
+            "Unrealized PnL",
+            &loading_signed(view.unrealized_pnl, loading),
+        ),
     ];
     let p = Paragraph::new(info)
         .block(panel("Account"))
@@ -471,6 +488,7 @@ fn render_position_box(f: &mut Frame, app: &App, token: &str, area: Rect) {
 
 fn portfolio(f: &mut Frame, app: &App, area: Rect) {
     let marks = marks_snapshot(app);
+    let loading = data_loading(app);
     let acct = app.account.lock().unwrap();
     let view = engine::portfolio_view(&acct, &marks);
     drop(acct);
@@ -481,12 +499,18 @@ fn portfolio(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let summary = vec![
-        kv_line("Equity", &money(view.equity)),
+        kv_line("Equity", &loading_money(view.equity, loading)),
         kv_line("Cash", &money(view.cash)),
         kv_line("Reserved (open buys)", &money(view.reserved_cash)),
-        kv_line("Positions Value", &money(view.positions_value)),
+        kv_line(
+            "Positions Value",
+            &loading_money(view.positions_value, loading),
+        ),
         kv_line("Realized PnL", &signed_money(view.realized_pnl)),
-        kv_line("Unrealized PnL", &signed_money(view.unrealized_pnl)),
+        kv_line(
+            "Unrealized PnL",
+            &loading_signed(view.unrealized_pnl, loading),
+        ),
     ];
     f.render_widget(
         Paragraph::new(summary).block(panel(&format!(
@@ -502,19 +526,33 @@ fn portfolio(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let upnl = p.unrealized_pnl.unwrap_or_default();
+            let ph = if loading { LOADING } else { "—" };
+            let (mark_cell, value_cell, upnl_cell) = match p.mark_price {
+                Some(mark) => {
+                    let upnl = p.unrealized_pnl.unwrap_or_default();
+                    (
+                        Cell::from(format!("{mark:.3}")),
+                        Cell::from(p.market_value.map(money).unwrap_or_else(|| ph.into())),
+                        Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+                    )
+                }
+                None => {
+                    let dim = Style::default().fg(DIM);
+                    (
+                        Cell::from(ph).style(dim),
+                        Cell::from(ph).style(dim),
+                        Cell::from(ph).style(dim),
+                    )
+                }
+            };
             Row::new(vec![
                 Cell::from(truncate(&p.position.question, 34)),
                 Cell::from(truncate(&p.position.outcome, 10)),
                 Cell::from(p.position.size.round_dp(1).to_string()),
                 Cell::from(format!("{:.3}", p.position.avg_price)),
-                Cell::from(
-                    p.mark_price
-                        .map(|m| format!("{m:.3}"))
-                        .unwrap_or_else(|| "—".into()),
-                ),
-                Cell::from(p.market_value.map(money).unwrap_or_else(|| "—".into())),
-                Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+                mark_cell,
+                value_cell,
+                upnl_cell,
             ])
             .style(zebra(i))
         })
@@ -542,6 +580,7 @@ fn portfolio(f: &mut Frame, app: &App, area: Rect) {
 
 fn positions(f: &mut Frame, app: &App, area: Rect) {
     let marks = marks_snapshot(app);
+    let loading = data_loading(app);
     let resolutions = app.data.lock().unwrap().resolutions.clone();
     let acct = app.account.lock().unwrap();
     let view = engine::portfolio_view(&acct, &marks);
@@ -558,7 +597,7 @@ fn positions(f: &mut Frame, app: &App, area: Rect) {
     let mut rows: Vec<Row> = Vec::with_capacity(view.positions.len() + 1);
     let mut zi = 0usize; // zebra index, continuous across the real rows
     for p in &open {
-        rows.push(open_position_row(p, zi));
+        rows.push(open_position_row(p, zi, loading));
         zi += 1;
     }
     if !resolved.is_empty() {
@@ -610,24 +649,46 @@ fn positions(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// A live (unresolved) position row: mark/value/uPnL/ROI from the quote feed.
-fn open_position_row(p: &PositionView, zi: usize) -> Row<'static> {
-    let upnl = p.unrealized_pnl.unwrap_or_default();
-    let roi_cell = match p.roi() {
-        Some(r) => Cell::from(format!("{:+.1}%", r * Decimal::ONE_HUNDRED))
-            .style(Style::default().fg(pnl_color(r))),
-        None => Cell::from("—"),
+/// Until a mark exists, the quote-derived cells show "loading…" (during the
+/// first refresh) or "—", never a misleading $0.00 uPnL.
+fn open_position_row(p: &PositionView, zi: usize, loading: bool) -> Row<'static> {
+    let placeholder = if loading { LOADING } else { "—" };
+    let value_str = p
+        .market_value
+        .map(money)
+        .unwrap_or_else(|| placeholder.to_string());
+
+    let (mark_cell, upnl_cell, roi_cell) = match p.mark_price {
+        Some(mark) => {
+            let upnl = p.unrealized_pnl.unwrap_or_default();
+            let roi_cell = match p.roi() {
+                Some(r) => Cell::from(format!("{:+.1}%", r * Decimal::ONE_HUNDRED))
+                    .style(Style::default().fg(pnl_color(r))),
+                None => Cell::from("—"),
+            };
+            (
+                Cell::from(price_pct(mark)),
+                Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+                roi_cell,
+            )
+        }
+        None => {
+            let dim = Style::default().fg(DIM);
+            (
+                Cell::from(placeholder).style(dim),
+                Cell::from(placeholder).style(dim),
+                Cell::from(placeholder).style(dim),
+            )
+        }
     };
+
     Row::new(vec![
         Cell::from(truncate(&p.position.question, 36)),
         Cell::from(truncate(&p.position.outcome, 8)),
-        Cell::from(format!(
-            "{} ({})",
-            p.position.size.round_dp(1),
-            p.market_value.map(money).unwrap_or_else(|| "—".into())
-        )),
+        Cell::from(format!("{} ({})", p.position.size.round_dp(1), value_str)),
         Cell::from(price_pct(p.position.avg_price)),
-        Cell::from(p.mark_price.map(price_pct).unwrap_or_else(|| "—".into())),
-        Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+        mark_cell,
+        upnl_cell,
         roi_cell,
     ])
     .style(zebra(zi))
@@ -1893,6 +1954,29 @@ fn side_cell(side: TradeSide) -> Cell<'static> {
 fn marks_snapshot(app: &App) -> BTreeMap<String, Decimal> {
     let d = app.data.lock().unwrap();
     d.marks.iter().map(|(k, v)| (k.clone(), *v)).collect()
+}
+
+/// True until the background refresher finishes its first pass. Marks-dependent
+/// figures (equity, value, uPnL, ROI) are meaningless before then — the quote
+/// cache is empty — so views show "loading…" instead of misleading zeros.
+fn data_loading(app: &App) -> bool {
+    app.data.lock().unwrap().last_refresh.is_none()
+}
+
+const LOADING: &str = "loading…";
+
+/// Money that isn't trustworthy until quotes load: "loading…" while loading.
+fn loading_money(v: Decimal, loading: bool) -> String {
+    if loading { LOADING.into() } else { money(v) }
+}
+
+/// Signed money gated on the first quote refresh (see [`loading_money`]).
+fn loading_signed(v: Decimal, loading: bool) -> String {
+    if loading {
+        LOADING.into()
+    } else {
+        signed_money(v)
+    }
 }
 
 fn daily_pnl(acct: &crate::paper::types::PaperAccount) -> Decimal {
