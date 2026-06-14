@@ -97,6 +97,27 @@ fn unknown_command_fails() {
 }
 
 #[test]
+fn completion_zsh_emits_script() {
+    polymarket()
+        .args(["completion", "zsh"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("#compdef polymarket")
+                .and(predicate::str::contains("_polymarket")),
+        );
+}
+
+#[test]
+fn completion_rejects_unknown_shell() {
+    polymarket()
+        .args(["completion", "notashell"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
 fn invalid_output_format_rejected() {
     polymarket()
         .args(["--output", "xml", "status"])

@@ -14,7 +14,8 @@ mod updater;
 
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use output::OutputFormat;
 
 #[derive(Parser)]
@@ -87,6 +88,13 @@ enum Commands {
     Status,
     /// Update to the latest version
     Upgrade,
+    /// Generate a shell completion script (bash, zsh, fish, powershell, elvish)
+    ///
+    /// Example: `polymarket completion zsh > ~/.zfunc/_polymarket`
+    Completion {
+        /// Target shell
+        shell: Shell,
+    },
 }
 
 #[tokio::main]
@@ -97,9 +105,11 @@ async fn main() -> ExitCode {
         cli.command,
         Commands::Tui { .. } | Commands::Shell | Commands::Mcp
     );
-    let is_upgrade = matches!(cli.command, Commands::Upgrade);
+    // Skip the update check for `upgrade` (it does its own) and for
+    // `completion` (its stdout must stay a clean, sourceable script).
+    let skip_update = matches!(cli.command, Commands::Upgrade | Commands::Completion { .. });
 
-    if !is_upgrade {
+    if !skip_update {
         updater::refresh_cache_if_stale();
     }
 
@@ -109,7 +119,7 @@ async fn main() -> ExitCode {
     }
 
     if !is_tui
-        && !is_upgrade
+        && !skip_update
         && let Some(tag) = updater::check_update()
     {
         eprintln!("\nUpdate {tag} available — run `polymarket upgrade` to install.");
@@ -173,6 +183,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             commands::wallet::execute(args, cli.output, cli.private_key.as_deref())
         }
         Commands::Upgrade => commands::upgrade::execute(),
+        Commands::Completion { shell } => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+            Ok(())
+        }
         Commands::Status => {
             let status = gamma.status().await?;
             match cli.output {

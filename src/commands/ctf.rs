@@ -65,6 +65,12 @@ sol! {
             bytes32 conditionId,
             uint256[] calldata amounts
         ) external;
+
+        function convertPositions(
+            bytes32 marketId,
+            uint256 indexSet,
+            uint256 amount
+        ) external;
     }
 }
 
@@ -126,6 +132,18 @@ pub enum CtfCommand {
         /// Parent collection ID for nested positions (defaults to zero)
         #[arg(long)]
         parent_collection: Option<B256>,
+    },
+    /// Convert neg-risk NO tokens into YES tokens for every other outcome
+    Convert {
+        /// Neg-risk market ID (0x-prefixed 32-byte hex)
+        #[arg(long)]
+        market_id: B256,
+        /// Number of shares to convert (e.g. 10)
+        #[arg(long)]
+        amount: String,
+        /// Comma-separated outcome indices whose NO tokens to convert (e.g. "0" or "0,2")
+        #[arg(long)]
+        outcomes: String,
     },
     /// Redeem neg-risk positions
     RedeemNegRisk {
@@ -216,6 +234,25 @@ fn parse_u256_csv(s: &str) -> Result<Vec<U256>> {
             Ok(U256::from(val))
         })
         .collect()
+}
+
+/// Build a neg-risk index-set bitmap from comma-separated outcome indices.
+/// Each index `i` sets bit `1 << i`; e.g. "0,2" => 0b101 = 5.
+fn build_index_set(s: &str) -> Result<U256> {
+    let mut bitmap = U256::ZERO;
+    for part in s.split(',') {
+        let trimmed = part.trim();
+        anyhow::ensure!(!trimmed.is_empty(), "Empty outcome index");
+        let idx: u32 = trimmed
+            .parse()
+            .context(format!("Invalid outcome index: {trimmed}"))?;
+        anyhow::ensure!(idx < 256, "Outcome index out of range: {idx}");
+        let bit = U256::from(1u8) << idx;
+        anyhow::ensure!((bitmap & bit).is_zero(), "Duplicate outcome index: {idx}");
+        bitmap |= bit;
+    }
+    anyhow::ensure!(!bitmap.is_zero(), "At least one outcome index required");
+    Ok(bitmap)
 }
 
 const DEFAULT_BINARY_SETS: [u64; 2] = [1, 2];
@@ -371,6 +408,29 @@ pub async fn execute(
                     .context("Redeem positions failed")?;
 
             ctf_output::print_tx_result("redeem", tx_hash, block_number, &output)
+        }
+        CtfCommand::Convert {
+            market_id,
+            amount,
+            outcomes,
+        } => {
+            let convert_amount = parse_collateral_amount(&amount)?;
+            let index_set = build_index_set(&outcomes)?;
+
+            let use_proxy = proxy::is_proxy_mode(signature_type)?;
+            let calldata = INegRiskAdapter::convertPositionsCall {
+                marketId: market_id,
+                indexSet: index_set,
+                amount: convert_amount,
+            }
+            .abi_encode();
+
+            let (tx_hash, block_number) =
+                proxy::send_call(private_key, use_proxy, NEG_RISK_ADAPTER, calldata)
+                    .await
+                    .context("Convert positions failed")?;
+
+            ctf_output::print_tx_result("convert", tx_hash, block_number, &output)
         }
         CtfCommand::RedeemNegRisk { condition, amounts } => {
             let amounts = parse_collateral_amounts(&amounts)?;
@@ -565,6 +625,44 @@ mod tests {
     #[test]
     fn parse_u256_csv_rejects_partial_invalid() {
         assert!(parse_u256_csv("1,abc,3").is_err());
+    }
+
+    #[test]
+    fn build_index_set_single_outcome() {
+        assert_eq!(build_index_set("0").unwrap(), U256::from(1u64));
+        assert_eq!(build_index_set("1").unwrap(), U256::from(2u64));
+        assert_eq!(build_index_set("3").unwrap(), U256::from(8u64));
+    }
+
+    #[test]
+    fn build_index_set_multiple_outcomes() {
+        // bits 0 and 2 => 0b101 = 5
+        assert_eq!(build_index_set("0,2").unwrap(), U256::from(5u64));
+    }
+
+    #[test]
+    fn build_index_set_with_spaces() {
+        assert_eq!(build_index_set("0, 1, 2").unwrap(), U256::from(7u64));
+    }
+
+    #[test]
+    fn build_index_set_rejects_duplicate() {
+        assert!(build_index_set("0,0").is_err());
+    }
+
+    #[test]
+    fn build_index_set_rejects_empty() {
+        assert!(build_index_set("").is_err());
+    }
+
+    #[test]
+    fn build_index_set_rejects_non_numeric() {
+        assert!(build_index_set("a").is_err());
+    }
+
+    #[test]
+    fn build_index_set_rejects_out_of_range() {
+        assert!(build_index_set("256").is_err());
     }
 
     #[test]

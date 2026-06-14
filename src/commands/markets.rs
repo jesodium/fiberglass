@@ -42,11 +42,13 @@ pub enum MarketsCommand {
         #[arg(long)]
         offset: Option<i32>,
 
-        /// Sort field (e.g. `volume_num`, `liquidity_num`)
+        /// Sort field: `volumeNum`, `liquidityNum`, `volume24hr`, `startDate`.
+        /// Note: keys are camelCase; unknown keys are silently ignored by the API
+        /// (results come back unsorted).
         #[arg(long)]
         order: Option<String>,
 
-        /// Sort ascending instead of descending
+        /// Sort ascending. Default is descending (highest first).
         #[arg(long)]
         ascending: bool,
     },

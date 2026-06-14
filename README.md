@@ -58,6 +58,22 @@ cd polymarket-cli
 cargo install --path .
 ```
 
+### Shell completion
+
+Generate a completion script for your shell with `polymarket completion <shell>`
+(`bash`, `zsh`, `fish`, `powershell`, `elvish`):
+
+```bash
+# zsh — put it on your fpath, then restart the shell
+polymarket completion zsh > ~/.zfunc/_polymarket
+
+# bash
+polymarket completion bash > /etc/bash_completion.d/polymarket
+
+# fish
+polymarket completion fish > ~/.config/fish/completions/polymarket.fish
+```
+
 ## Trading Terminal (TUI)
 
 The primary interface is a keyboard-driven trading terminal — closer to a
@@ -272,7 +288,8 @@ Errors follow the same pattern — table mode prints `Error: ...` to stderr, JSO
 ```bash
 # List markets with filters
 polymarket markets list --limit 10
-polymarket markets list --active true --order volume_num
+polymarket markets list --active true --order volumeNum          # highest volume first (default: descending)
+polymarket markets list --active true --order volumeNum --ascending  # lowest first
 polymarket markets list --closed false --limit 50 --offset 25
 
 # Get a single market by ID or slug
@@ -555,6 +572,9 @@ polymarket ctf redeem --condition 0xCONDITION...
 
 # Redeem neg-risk positions
 polymarket ctf redeem-neg-risk --condition 0xCONDITION... --amounts "10,5"
+
+# Convert neg-risk NO tokens into YES tokens for every other outcome
+polymarket ctf convert --market-id 0xMARKET... --outcomes "0" --amount 10
 
 # Calculate IDs (read-only, no wallet needed)
 polymarket ctf condition-id --oracle 0xORACLE... --question 0xQUESTION... --outcomes 2
