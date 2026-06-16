@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+use polymarket_client_sdk_v2::clob::types::request::OrderBookSummaryRequest;
 use polymarket_client_sdk_v2::gamma;
 use polymarket_client_sdk_v2::types::{Address, Decimal};
 
@@ -108,20 +109,16 @@ pub(crate) async fn refresher(
     // Highest mark seen per token, for trailing-stop guards.
     let mut guard_peaks: HashMap<String, Decimal> = HashMap::new();
     loop {
-        // Live: mirror the real wallet into the account snapshot the views read.
-        if let Some(user) = live_user {
-            let live_acct = live::fetch_account(user, market_ticks == 0).await;
-            hydrate(&account, live_acct);
-            // Open orders need an authenticated call — slow cadence only.
-            if market_ticks == 0
-                && let Ok(orders) = live::fetch_open_orders().await
-            {
-                shared.lock().unwrap().live_orders = orders;
-            }
-        }
-
-        // Refresh the markets list roughly every ~30s (every 6th 5s pass).
+        // Slow cadence: market list, resolutions, balance, open orders (~15s).
         if market_ticks == 0 {
+            if let Some(_user) = live_user {
+                if let Ok(cash) = live::fetch_collateral().await {
+                    account.lock().unwrap().cash = cash;
+                }
+                if let Ok(orders) = live::fetch_open_orders().await {
+                    shared.lock().unwrap().live_orders = orders;
+                }
+            }
             match fetch_markets(&gamma).await {
                 Ok(rows) => {
                     let mut d = shared.lock().unwrap();
@@ -135,9 +132,6 @@ pub(crate) async fn refresher(
                     d.connected = false;
                 }
             }
-        }
-        // Check held tokens for market resolution on the same slow cadence.
-        if market_ticks == 0 {
             let held: Vec<String> = account.lock().unwrap().positions.keys().cloned().collect();
             if !held.is_empty()
                 && let Ok(resolved) = fetch_resolutions(&gamma, &held).await
@@ -145,66 +139,100 @@ pub(crate) async fn refresher(
             {
                 let mut d = shared.lock().unwrap();
                 for (token, info) in &resolved {
-                    // Resolved books vanish — mark at the payout so value,
-                    // uPnL and ROI stay correct until the position settles.
                     d.marks.insert(token.clone(), info.payout);
                 }
                 d.resolutions.extend(resolved);
             }
         }
-        market_ticks = (market_ticks + 1) % 6;
+        market_ticks = (market_ticks + 1) % 300;
 
-        // Refresh books for watched tokens every pass.
+        // Concurrent: live positions + batch book refresh.
         let watch = shared.lock().unwrap().watch.clone();
-        if !watch.is_empty()
-            && let Ok(client) = crate::auth::unauthenticated_clob_client()
-        {
-            let mut books = HashMap::new();
-            let mut marks = HashMap::new();
-            for tid in &watch {
-                if let Ok(token) = quotes::parse_token_id(tid)
-                    && let Ok(levels) = quotes::fetch_book(&client, token).await
+
+        let user = live_user;
+        let (live_positions, (books, marks)) = tokio::join!(
+            async {
+                if let Some(u) = user {
+                    live::fetch_positions(u).await.unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            },
+            async {
+                let mut books: HashMap<String, BookView> = HashMap::new();
+                let mut marks: HashMap<String, Decimal> = HashMap::new();
+                if !watch.is_empty()
+                    && let Ok(client) = crate::auth::unauthenticated_clob_client()
                 {
-                    let q = levels.quote();
-                    // Mark at the bid-ask midpoint so the TUI matches the
-                    // `paper portfolio` command (which marks at the CLOB
-                    // midpoint). Fall back to whichever side exists.
-                    let mid = match (q.best_bid, q.best_ask) {
-                        (Some(b), Some(a)) => Some((b + a) / Decimal::from(2)),
-                        (Some(b), None) => Some(b),
-                        (None, Some(a)) => Some(a),
-                        (None, None) => None,
-                    };
-                    if let Some(m) = mid {
-                        marks.insert(tid.clone(), m);
+                    let requests: Vec<_> = watch
+                        .iter()
+                        .filter_map(|tid| {
+                            let token = quotes::parse_token_id(tid).ok()?;
+                            Some(OrderBookSummaryRequest::builder().token_id(token).build())
+                        })
+                        .collect();
+                    if !requests.is_empty()
+                        && let Ok(responses) = client.order_books(&requests).await
+                    {
+                        for resp in responses {
+                            let tid = resp.asset_id.to_string();
+                            let mut bids: Vec<(Decimal, Decimal)> =
+                                resp.bids.iter().map(|l| (l.price, l.size)).collect();
+                            let mut asks: Vec<(Decimal, Decimal)> =
+                                resp.asks.iter().map(|l| (l.price, l.size)).collect();
+                            bids.sort_by_key(|&(price, _)| std::cmp::Reverse(price));
+                            asks.sort_by_key(|&(price, _)| price);
+                            let best_bid = bids.first().map(|&(p, _)| p);
+                            let best_ask = asks.first().map(|&(p, _)| p);
+                            let mid = match (best_bid, best_ask) {
+                                (Some(b), Some(a)) => Some((b + a) / Decimal::from(2)),
+                                (Some(b), None) => Some(b),
+                                (None, Some(a)) => Some(a),
+                                (None, None) => None,
+                            };
+                            if let Some(m) = mid {
+                                marks.insert(tid.clone(), m);
+                            }
+                            books.insert(
+                                tid,
+                                BookView {
+                                    best_bid,
+                                    best_ask,
+                                    bids,
+                                    asks,
+                                },
+                            );
+                        }
                     }
-                    books.insert(
-                        tid.clone(),
-                        BookView {
-                            best_bid: q.best_bid,
-                            best_ask: q.best_ask,
-                            bids: levels.bids,
-                            asks: levels.asks,
-                        },
-                    );
                 }
+                (books, marks)
+            },
+        );
+
+        // Hydrate live positions every pass.
+        if live_user.is_some() {
+            let mut a = account.lock().unwrap();
+            a.positions.clear();
+            for p in live_positions {
+                a.positions.insert(p.token_id.clone(), p);
             }
-            {
-                let mut d = shared.lock().unwrap();
-                for (k, v) in &books {
-                    d.books.insert(k.clone(), v.clone());
-                }
-                for (k, v) in &marks {
-                    // The payout mark is authoritative once a market resolves.
-                    if d.resolutions.contains_key(k) {
-                        continue;
-                    }
+        }
+
+        // Write fresh books and marks into shared state.
+        {
+            let mut d = shared.lock().unwrap();
+            for (k, v) in &books {
+                d.books.insert(k.clone(), v.clone());
+            }
+            for (k, v) in &marks {
+                if !d.resolutions.contains_key(k) {
                     d.marks.insert(k.clone(), *v);
                 }
             }
+        }
 
-            // Evaluate TP/SL guards against the fresh books and exit positions
-            // whose thresholds have been crossed.
+        // Evaluate TP/SL guards against the fresh books.
+        if !books.is_empty() {
             tick_guards(
                 &shared,
                 &account,
@@ -215,11 +243,8 @@ pub(crate) async fn refresher(
             );
         }
 
-        // Mark one full refresh pass complete (even with nothing to watch), so
-        // the UI can tell "still loading" from "loaded, nothing to show".
         shared.lock().unwrap().last_refresh = Some(Utc::now());
-
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -312,22 +337,6 @@ fn tick_guards(
 /// Overwrite the account snapshot with real wallet state (live mode only).
 /// Open orders and trade history are left untouched — in live mode those are
 /// managed through the CLOB directly (`clob orders` / `clob cancel`).
-fn hydrate(account: &Arc<Mutex<PaperAccount>>, live: live::LiveAccount) {
-    let mut a = account.lock().unwrap();
-    a.positions.clear();
-    for p in live.positions {
-        a.positions.insert(p.token_id.clone(), p);
-    }
-    if let Some(cash) = live.cash {
-        a.cash = cash;
-        // Anchor ROI to first observed equity (cash + cost basis).
-        if a.initial_balance == Decimal::ZERO {
-            let cost: Decimal = a.positions.values().map(|p| p.size * p.avg_price).sum();
-            a.initial_balance = cash + cost;
-        }
-    }
-}
-
 /// Flatten a Gamma market into the row the UI needs, skipping ones without
 /// CLOB tokens (not tradable).
 fn to_market_row(m: gamma::types::response::Market) -> Option<MarketRow> {
