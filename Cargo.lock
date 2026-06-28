@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "polymarket-cli"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "alloy",
  "anyhow",
