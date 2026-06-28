@@ -178,6 +178,7 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
     let view = engine::portfolio_view(&acct, &marks);
     let daily = daily_pnl(&acct);
     let stats = trade_stats(&acct);
+    let equity_stats = equity_metrics(&acct.equity_curve);
     let recent: Vec<_> = acct.trades.iter().rev().take(8).cloned().collect();
     let positions = acct.positions.len();
     let open_orders = acct.open_orders.len();
@@ -225,7 +226,7 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
         .split(rows[1]);
 
-    let info = vec![
+    let mut info = vec![
         kv_line("Open Positions", &positions.to_string()),
         kv_line("Open Orders", &open_orders.to_string()),
         kv_line("Copy Followers", &following.to_string()),
@@ -257,6 +258,17 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
         ),
         kv_line("Expectancy", &signed_money(stats.expectancy)),
     ];
+    // Only shown once equity snapshots have accumulated (hidden for accounts
+    // predating equity snapshotting).
+    if let Some(eq) = equity_stats {
+        info.push(kv_line(
+            "Max Drawdown",
+            &format!("{}%", eq.max_drawdown_pct),
+        ));
+        if let Some(sh) = eq.sharpe {
+            info.push(kv_line("Sharpe", &sh.to_string()));
+        }
+    }
     let p = Paragraph::new(info)
         .block(panel("Account"))
         .wrap(Wrap { trim: true });
@@ -2082,6 +2094,52 @@ fn trade_stats(acct: &crate::paper::types::PaperAccount) -> TradeStats {
     }
 }
 
+/// Sharpe (sample, per-snapshot, unitless) and max drawdown (%) over the
+/// persisted equity curve. Returns `None` until enough samples accumulate, so
+/// accounts predating equity snapshotting show nothing.
+struct EquityMetrics {
+    sharpe: Option<Decimal>,
+    max_drawdown_pct: Decimal,
+}
+
+fn equity_metrics(curve: &[(chrono::DateTime<chrono::Utc>, Decimal)]) -> Option<EquityMetrics> {
+    // Need a handful of returns for the numbers to mean anything.
+    if curve.len() < 11 {
+        return None;
+    }
+    let eq: Vec<f64> = curve
+        .iter()
+        .map(|&(_, e)| f64::try_from(e).unwrap_or(0.0))
+        .collect();
+    let returns: Vec<f64> = eq
+        .windows(2)
+        .filter(|w| w[0] != 0.0)
+        .map(|w| (w[1] - w[0]) / w[0])
+        .collect();
+    let sharpe = if returns.is_empty() {
+        None
+    } else {
+        let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+        let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+        let sd = var.sqrt();
+        (sd > 0.0).then(|| Decimal::try_from(mean / sd).unwrap_or_default().round_dp(2))
+    };
+    let mut peak = eq[0];
+    let mut max_dd = 0.0_f64;
+    for &e in &eq {
+        peak = peak.max(e);
+        if peak > 0.0 {
+            max_dd = max_dd.max((peak - e) / peak);
+        }
+    }
+    Some(EquityMetrics {
+        sharpe,
+        max_drawdown_pct: Decimal::try_from(max_dd * 100.0)
+            .unwrap_or_default()
+            .round_dp(1),
+    })
+}
+
 fn pnl_color(v: Decimal) -> Color {
     if v > Decimal::ZERO {
         GOOD
@@ -2191,5 +2249,26 @@ mod stats_tests {
         let s = trade_stats(&a);
         assert_eq!(s.closed, 0);
         assert_eq!(s.profit_factor, None);
+    }
+
+    #[test]
+    fn equity_metrics_need_samples() {
+        let now = chrono::Utc::now();
+        let short: Vec<_> = (0..5)
+            .map(|i| (now, dec!(1000) + Decimal::from(i)))
+            .collect();
+        assert!(equity_metrics(&short).is_none());
+    }
+
+    #[test]
+    fn equity_metrics_drawdown() {
+        let now = chrono::Utc::now();
+        // Up to 1100 (peak), down to 990 → drawdown = (1100-990)/1100 = 10%.
+        let vals = [
+            1000, 1010, 1020, 1050, 1080, 1100, 1090, 1050, 1010, 1000, 990,
+        ];
+        let curve: Vec<_> = vals.iter().map(|&v| (now, Decimal::from(v))).collect();
+        let m = equity_metrics(&curve).unwrap();
+        assert_eq!(m.max_drawdown_pct, dec!(10.0));
     }
 }

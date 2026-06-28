@@ -122,6 +122,11 @@ pub(crate) struct PaperAccount {
     pub positions: BTreeMap<String, Position>,
     pub open_orders: Vec<OpenOrder>,
     pub trades: Vec<Trade>,
+    /// Mark-to-market equity samples `(timestamp, equity)`, appended by the
+    /// background loop. Empty on accounts created before snapshotting existed —
+    /// Sharpe/drawdown stay hidden until enough samples accumulate.
+    #[serde(default)]
+    pub equity_curve: Vec<(DateTime<Utc>, Decimal)>,
 }
 
 impl PaperAccount {
@@ -136,6 +141,7 @@ impl PaperAccount {
             positions: BTreeMap::new(),
             open_orders: Vec::new(),
             trades: Vec::new(),
+            equity_curve: Vec::new(),
         }
     }
 

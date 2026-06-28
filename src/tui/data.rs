@@ -147,6 +147,30 @@ pub(crate) async fn refresher(
                 }
                 d.resolutions.extend(resolved);
             }
+
+            // Snapshot mark-to-market equity (paper only), throttled to ~5 min,
+            // so the dashboard can derive Sharpe / max drawdown over time.
+            if live_user.is_none() {
+                let marks: std::collections::BTreeMap<String, Decimal> =
+                    shared.lock().unwrap().marks.clone().into_iter().collect();
+                let mut a = account.lock().unwrap();
+                let now = Utc::now();
+                let stale = a
+                    .equity_curve
+                    .last()
+                    .is_none_or(|&(t, _)| now - t >= chrono::Duration::minutes(5));
+                if stale {
+                    let equity = paper_engine::portfolio_view(&a, &marks).equity;
+                    a.equity_curve.push((now, equity));
+                    // ponytail: ring-buffer cap ~10 days at 5-min cadence; raise if you want longer history.
+                    const CAP: usize = 3000;
+                    if a.equity_curve.len() > CAP {
+                        let drop = a.equity_curve.len() - CAP;
+                        a.equity_curve.drain(0..drop);
+                    }
+                    let _ = crate::paper::store::save(&a);
+                }
+            }
         }
         market_ticks = (market_ticks + 1) % 300;
 
