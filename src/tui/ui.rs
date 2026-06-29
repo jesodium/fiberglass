@@ -2251,5 +2251,4 @@ mod stats_tests {
             .collect();
         assert!(equity_metrics(&short).is_none());
     }
-
 }
