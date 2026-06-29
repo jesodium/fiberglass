@@ -265,10 +265,10 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
     ];
     // Only shown once equity snapshots have accumulated (hidden for accounts
     // predating equity snapshotting).
-    if let Some(eq) = equity_stats {
-        if let Some(sh) = eq.sharpe {
-            info.push(kv_line("Sharpe", &sh.to_string()));
-        }
+    if let Some(eq) = equity_stats
+        && let Some(sh) = eq.sharpe
+    {
+        info.push(kv_line("Sharpe", &sh.to_string()));
     }
     let p = Paragraph::new(info)
         .block(panel("Account"))
