@@ -84,6 +84,16 @@ pub enum PaperCommand {
         order_id: u64,
     },
 
+    /// Settle a held position at market resolution ($1 won, $0 lost).
+    /// Cancels the token's resting orders, then books realized PnL.
+    Settle {
+        /// Token ID (numeric string)
+        token_id: String,
+        /// Resolution payout per share: 1 = won, 0 = lost
+        #[arg(long)]
+        payout: String,
+    },
+
     /// Performance analytics: win rate, best/worst trade, daily PnL
     Stats,
 }
@@ -250,6 +260,31 @@ pub async fn execute(args: PaperArgs, output: OutputFormat) -> Result<()> {
                 OutputFormat::Json => {
                     crate::output::print_json(
                         &serde_json::json!({"cancelled": order, "cash_after": account.cash}),
+                    )?;
+                }
+            }
+        }
+
+        PaperCommand::Settle { token_id, payout } => {
+            let payout = parse_decimal(&payout, "payout")?;
+            let token = quotes::parse_token_id(&token_id)?;
+            let token_id = token.to_string();
+            let mut account = store::load_required()?;
+            let trade = engine::settle_position(&mut account, &token_id, payout, Utc::now())?;
+            store::save(&account)?;
+            match output {
+                OutputFormat::Table => {
+                    println!(
+                        "Settled {} shares of {} at ${} payout. Cash: ${}.",
+                        trade.size.round_dp(2),
+                        token_id,
+                        payout.round_dp(2),
+                        account.cash.round_dp(2)
+                    );
+                }
+                OutputFormat::Json => {
+                    crate::output::print_json(
+                        &serde_json::json!({"settled": trade, "cash_after": account.cash}),
                     )?;
                 }
             }
