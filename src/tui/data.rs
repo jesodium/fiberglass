@@ -406,7 +406,7 @@ fn market_resolved(closed: Option<bool>, uma_status: Option<&str>, prices: &[Dec
 
 /// Look up the markets behind `token_ids` and report any that have resolved,
 /// keyed by token with each token's payout (its final outcome price).
-async fn fetch_resolutions(
+pub(crate) async fn fetch_resolutions(
     client: &gamma::Client,
     token_ids: &[String],
 ) -> anyhow::Result<HashMap<String, ResolutionInfo>> {

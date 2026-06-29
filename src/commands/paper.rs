@@ -86,12 +86,15 @@ pub enum PaperCommand {
 
     /// Settle a held position at market resolution ($1 won, $0 lost).
     /// Cancels the token's resting orders, then books realized PnL.
+    /// Omit --payout to auto-resolve the winner from Gamma (same source the TUI
+    /// uses); fails if the market hasn't finalized yet.
     Settle {
         /// Token ID (numeric string)
         token_id: String,
-        /// Resolution payout per share: 1 = won, 0 = lost
+        /// Resolution payout per share: 1 = won, 0 = lost.
+        /// Omit to auto-resolve from the market's final outcome price.
         #[arg(long)]
-        payout: String,
+        payout: Option<String>,
     },
 
     /// Performance analytics: win rate, best/worst trade, daily PnL
@@ -266,9 +269,28 @@ pub async fn execute(args: PaperArgs, output: OutputFormat) -> Result<()> {
         }
 
         PaperCommand::Settle { token_id, payout } => {
-            let payout = parse_decimal(&payout, "payout")?;
             let token = quotes::parse_token_id(&token_id)?;
             let token_id = token.to_string();
+            // Explicit --payout wins; otherwise auto-resolve from Gamma using the
+            // same resolution check the TUI trusts (only fires once finalized).
+            let payout = match payout {
+                Some(p) => parse_decimal(&p, "payout")?,
+                None => {
+                    let gamma = polymarket_client_sdk_v2::gamma::Client::default();
+                    let res = crate::tui::data::fetch_resolutions(
+                        &gamma,
+                        std::slice::from_ref(&token_id),
+                    )
+                    .await?;
+                    match res.get(&token_id) {
+                        Some(info) => info.payout,
+                        None => bail!(
+                            "Market for token {token_id} hasn't finalized yet; \
+                             pass --payout 0|1 to force settlement"
+                        ),
+                    }
+                }
+            };
             let mut account = store::load_required()?;
             let trade = engine::settle_position(&mut account, &token_id, payout, Utc::now())?;
             store::save(&account)?;

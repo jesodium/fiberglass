@@ -8,7 +8,7 @@
 //!     it only ever reads already-fetched state.
 
 mod app;
-mod data;
+pub(crate) mod data;
 mod live;
 mod ui;
 
