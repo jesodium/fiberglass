@@ -2041,10 +2041,13 @@ impl App {
         let signer = LocalSigner::random().with_chain_id(Some(POLYGON));
         let address = signer.address();
         let key_hex = format!("{:#x}", signer.to_bytes());
-        if let Err(e) = config::save_wallet(&key_hex, POLYGON, config::DEFAULT_SIGNATURE_TYPE) {
-            self.set_onboarding_error(format!("Failed to save wallet: {e}"));
-            return;
-        }
+        let storage = match config::save_wallet(&key_hex, POLYGON, config::DEFAULT_SIGNATURE_TYPE) {
+            Ok(s) => s,
+            Err(e) => {
+                self.set_onboarding_error(format!("Failed to save wallet: {e}"));
+                return;
+            }
+        };
         let sig_type = config::resolve_signature_type(None)
             .unwrap_or_else(|_| config::DEFAULT_SIGNATURE_TYPE.to_string());
         let proxy = derive_proxy_wallet(address, POLYGON).map(|a| a.to_string());
@@ -2066,7 +2069,8 @@ impl App {
         self.onboarding = None;
         self.view = View::Dashboard;
         self.status = format!(
-            "✓ Wallet created: {address}. The terminal now shows live state. Press Tab/9 for Settings.",
+            "✓ Wallet created: {address} ({}). Press Tab/9 for Settings.",
+            key_storage_label(&storage),
         );
     }
 
@@ -2083,10 +2087,13 @@ impl App {
         };
         let address = signer.address();
         let key_hex = format!("{:#x}", signer.to_bytes());
-        if let Err(e) = config::save_wallet(&key_hex, POLYGON, config::DEFAULT_SIGNATURE_TYPE) {
-            self.set_onboarding_error(format!("Failed to save wallet: {e}"));
-            return;
-        }
+        let storage = match config::save_wallet(&key_hex, POLYGON, config::DEFAULT_SIGNATURE_TYPE) {
+            Ok(s) => s,
+            Err(e) => {
+                self.set_onboarding_error(format!("Failed to save wallet: {e}"));
+                return;
+            }
+        };
         let sig_type = config::resolve_signature_type(None)
             .unwrap_or_else(|_| config::DEFAULT_SIGNATURE_TYPE.to_string());
         let proxy = derive_proxy_wallet(address, POLYGON).map(|a| a.to_string());
@@ -2107,7 +2114,10 @@ impl App {
         self.live = true;
         self.onboarding = None;
         self.view = View::Dashboard;
-        self.status = format!("✓ Wallet imported: {address}. The terminal now shows live state.",);
+        self.status = format!(
+            "✓ Wallet imported: {address} ({}).",
+            key_storage_label(&storage),
+        );
     }
 
     fn set_onboarding_error(&mut self, msg: String) {
@@ -2123,6 +2133,14 @@ impl App {
 /// Only an existing wallet is at risk; a first-time import has nothing to clobber.
 fn import_needs_confirm(config_exists: bool, already_confirmed: bool) -> bool {
     config_exists && !already_confirmed
+}
+
+/// Short label for where the key was saved, for the status line.
+fn key_storage_label(storage: &config::KeyStorage) -> &'static str {
+    match storage {
+        config::KeyStorage::Keychain => "key in OS keychain",
+        config::KeyStorage::PlaintextFile => "key in config file — plaintext",
+    }
 }
 
 impl App {

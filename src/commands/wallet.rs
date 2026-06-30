@@ -42,6 +42,8 @@ pub enum WalletCommand {
     Address,
     /// Show wallet info (address, config path, key source)
     Show,
+    /// Move a plaintext key from the config file into the OS keychain
+    Secure,
     /// Override the funder/proxy wallet address — for web/email (Magic)
     /// accounts whose server-assigned proxy differs from the derived one
     SetProxy {
@@ -77,8 +79,19 @@ pub fn execute(
         } => cmd_import(&key, output, force, &signature_type),
         WalletCommand::Address => cmd_address(output, private_key_flag),
         WalletCommand::Show => cmd_show(output, private_key_flag),
+        WalletCommand::Secure => cmd_secure(output),
         WalletCommand::SetProxy { address, clear } => cmd_set_proxy(output, address, clear),
         WalletCommand::Reset { force } => cmd_reset(output, force),
+    }
+}
+
+/// One-line description of where the key landed, for `create`/`import` output.
+fn storage_line(storage: &config::KeyStorage) -> &'static str {
+    match storage {
+        config::KeyStorage::Keychain => "Key stored:     OS keychain (encrypted)",
+        config::KeyStorage::PlaintextFile => {
+            "Key stored:     config file (PLAINTEXT — no OS keychain available)"
+        }
     }
 }
 
@@ -99,7 +112,7 @@ fn cmd_create(output: OutputFormat, force: bool, signature_type: &str) -> Result
     let address = signer.address();
     let key_hex = format!("{:#x}", signer.to_bytes());
 
-    config::save_wallet(&key_hex, POLYGON, signature_type)?;
+    let storage = config::save_wallet(&key_hex, POLYGON, signature_type)?;
     let config_path = config::config_path()?;
     let proxy_addr = derive_proxy_wallet(address, POLYGON);
 
@@ -112,6 +125,10 @@ fn cmd_create(output: OutputFormat, force: bool, signature_type: &str) -> Result
                     "proxy_address": proxy_addr.map(|a| a.to_string()),
                     "signature_type": signature_type,
                     "config_path": config_path.display().to_string(),
+                    "key_storage": match storage {
+                        config::KeyStorage::Keychain => "keychain",
+                        config::KeyStorage::PlaintextFile => "file",
+                    },
                 })
             );
         }
@@ -123,8 +140,9 @@ fn cmd_create(output: OutputFormat, force: bool, signature_type: &str) -> Result
             }
             println!("Signature type: {signature_type}");
             println!("Config:         {}", config_path.display());
+            println!("{}", storage_line(&storage));
             println!();
-            println!("IMPORTANT: Back up your private key from the config file.");
+            println!("IMPORTANT: This private key IS your funds — back it up now.");
             println!("           If lost, your funds cannot be recovered.");
         }
     }
@@ -140,7 +158,7 @@ fn cmd_import(key: &str, output: OutputFormat, force: bool, signature_type: &str
     let address = signer.address();
     let key_hex = format!("{:#x}", signer.to_bytes());
 
-    config::save_wallet(&key_hex, POLYGON, signature_type)?;
+    let storage = config::save_wallet(&key_hex, POLYGON, signature_type)?;
     let config_path = config::config_path()?;
     let proxy_addr = derive_proxy_wallet(address, POLYGON);
 
@@ -153,6 +171,10 @@ fn cmd_import(key: &str, output: OutputFormat, force: bool, signature_type: &str
                     "proxy_address": proxy_addr.map(|a| a.to_string()),
                     "signature_type": signature_type,
                     "config_path": config_path.display().to_string(),
+                    "key_storage": match storage {
+                        config::KeyStorage::Keychain => "keychain",
+                        config::KeyStorage::PlaintextFile => "file",
+                    },
                 })
             );
         }
@@ -164,6 +186,20 @@ fn cmd_import(key: &str, output: OutputFormat, force: bool, signature_type: &str
             }
             println!("Signature type: {signature_type}");
             println!("Config:         {}", config_path.display());
+            println!("{}", storage_line(&storage));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_secure(output: OutputFormat) -> Result<()> {
+    config::secure_existing_key()?;
+    match output {
+        OutputFormat::Json => {
+            println!("{}", serde_json::json!({"key_storage": "keychain"}));
+        }
+        OutputFormat::Table => {
+            println!("Private key moved into the OS keychain and removed from the config file.");
         }
     }
     Ok(())
@@ -236,6 +272,13 @@ fn cmd_show(output: OutputFormat, private_key_flag: Option<&str>) -> Result<()> 
             println!("Signature type: {sig_type}");
             println!("Config path:    {}", config_path.display());
             println!("Key source:     {}", source.label());
+
+            // Nudge plaintext-on-disk users toward the OS keychain.
+            if matches!(source, config::KeySource::ConfigFile) {
+                println!();
+                println!("TIP: Your key is stored in plaintext. Run `fiberglass wallet secure` to");
+                println!("     move it into the OS keychain.");
+            }
 
             // Proxy accounts: the derived address is counterfactual and usually
             // differs from the one shown in the Polymarket web app. Sending tokens
