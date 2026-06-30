@@ -281,18 +281,13 @@ impl CopyModal {
     }
 }
 
-/// Onboarding flow step when live mode starts without a wallet.
+/// Onboarding when live mode starts without a wallet: paste your exported
+/// Polymarket private key (logging into your own account). There is no
+/// wallet-creation path — the CLI only ever uses a key you already own.
 pub(crate) struct OnboardingState {
-    pub step: OnboardingStep,
     /// Text input for importing an existing private key.
     pub import_key: String,
     pub error: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum OnboardingStep {
-    Welcome,
-    ImportKey,
 }
 
 /// Modal for wallet management actions in the Settings tab.
@@ -305,7 +300,6 @@ pub(crate) struct WalletActionModal {
 }
 
 pub(crate) enum WalletAction {
-    Create,
     Import,
     /// Set the proxy/funder address override (fixes "maker address not allowed").
     SetProxy,
@@ -394,7 +388,6 @@ impl App {
         let needs_onboarding = live && wallet.is_none();
         let onboarding = if needs_onboarding {
             Some(OnboardingState {
-                step: OnboardingStep::Welcome,
                 import_key: String::new(),
                 error: None,
             })
@@ -723,19 +716,7 @@ impl App {
                 });
                 self.status = "Fetching deposit address…".into();
             }
-            // Settings: create/import wallet (live mode).
-            KeyCode::Char('n') if self.view == View::Settings && self.live => {
-                if self.wallet.is_some() {
-                    self.wallet_action_modal = Some(WalletActionModal {
-                        action: WalletAction::Create,
-                        import_key: String::new(),
-                        error: None,
-                        confirmed: false,
-                    });
-                } else {
-                    self.execute_create_wallet();
-                }
-            }
+            // Settings: import (log into) a wallet (live mode).
             KeyCode::Char('m') if self.view == View::Settings && self.live => {
                 self.wallet_action_modal = Some(WalletActionModal {
                     action: WalletAction::Import,
@@ -759,7 +740,7 @@ impl App {
                         confirmed: false,
                     });
                 } else {
-                    self.status = "Configure a wallet first (n or m).".into();
+                    self.status = "Import a wallet first (m).".into();
                 }
             }
             // Settings: cycle the signature type (eoa → proxy → gnosis-safe).
@@ -767,7 +748,7 @@ impl App {
                 if self.wallet.is_some() {
                     self.cycle_signature_type();
                 } else {
-                    self.status = "Configure a wallet first (n or m).".into();
+                    self.status = "Import a wallet first (m).".into();
                 }
             }
             // Settings: reset the paper account.
@@ -1943,55 +1924,31 @@ impl App {
 
 impl App {
     fn onboarding_key(&mut self, key: KeyEvent) {
-        let step = self.onboarding.as_ref().map(|s| s.step);
-        let Some(step) = step else { return };
-        match step {
-            OnboardingStep::Welcome => match key.code {
-                KeyCode::Char('c') => {
-                    self.execute_create_wallet();
-                }
-                KeyCode::Char('i') => {
-                    if let Some(s) = self.onboarding.as_mut() {
-                        s.step = OnboardingStep::ImportKey;
-                        s.import_key.clear();
-                        s.error = None;
-                    }
-                }
-                KeyCode::Esc => {
-                    self.onboarding = None;
-                    self.view = View::Dashboard;
-                    self.status = "No wallet configured — browsing markets only. Press Tab/9 for Settings to set up a wallet.".to_string();
-                }
-                _ => {}
-            },
-            OnboardingStep::ImportKey => {
-                // Collect the key text first to avoid borrow conflicts.
-                let key_text = self.onboarding.as_ref().map(|s| s.import_key.clone());
-                match key.code {
-                    KeyCode::Esc => {
-                        if let Some(s) = self.onboarding.as_mut() {
-                            s.step = OnboardingStep::Welcome;
-                            s.import_key.clear();
-                            s.error = None;
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if let Some(s) = self.onboarding.as_mut() {
-                            s.import_key.pop();
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        if let Some(s) = self.onboarding.as_mut() {
-                            s.import_key.push(c);
-                        }
-                    }
-                    KeyCode::Enter => {
-                        let key = key_text.unwrap_or_default();
-                        self.execute_import_wallet(&key);
-                    }
-                    _ => {}
+        // Collect the key text first to avoid borrow conflicts.
+        let key_text = self.onboarding.as_ref().map(|s| s.import_key.clone());
+        if key_text.is_none() {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.onboarding = None;
+                self.view = View::Dashboard;
+                self.status = "No wallet configured — browsing markets only. Press Tab/9 for Settings to log in.".to_string();
+            }
+            KeyCode::Backspace => {
+                if let Some(s) = self.onboarding.as_mut() {
+                    s.import_key.pop();
                 }
             }
+            KeyCode::Char(c) => {
+                if let Some(s) = self.onboarding.as_mut() {
+                    s.import_key.push(c);
+                }
+            }
+            KeyCode::Enter => {
+                self.execute_import_wallet(&key_text.unwrap_or_default());
+            }
+            _ => {}
         }
     }
 
@@ -2035,43 +1992,6 @@ impl App {
             }
             Err(e) => self.status = format!("Failed to set signature type: {e}"),
         }
-    }
-
-    fn execute_create_wallet(&mut self) {
-        let signer = LocalSigner::random().with_chain_id(Some(POLYGON));
-        let address = signer.address();
-        let key_hex = format!("{:#x}", signer.to_bytes());
-        let storage = match config::save_wallet(&key_hex, POLYGON, config::DEFAULT_SIGNATURE_TYPE) {
-            Ok(s) => s,
-            Err(e) => {
-                self.set_onboarding_error(format!("Failed to save wallet: {e}"));
-                return;
-            }
-        };
-        let sig_type = config::resolve_signature_type(None)
-            .unwrap_or_else(|_| config::DEFAULT_SIGNATURE_TYPE.to_string());
-        let proxy = derive_proxy_wallet(address, POLYGON).map(|a| a.to_string());
-        self.wallet = Some(WalletInfo {
-            eoa: address.to_string(),
-            proxy: proxy.clone(),
-            trading: if sig_type == "proxy" {
-                proxy.unwrap_or_else(|| address.to_string())
-            } else {
-                address.to_string()
-            },
-            signature_type: sig_type,
-            private_key: Some(key_hex),
-            config_path: config::config_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-        });
-        self.live = true;
-        self.onboarding = None;
-        self.view = View::Dashboard;
-        self.status = format!(
-            "✓ Wallet created: {address} ({}). Press Tab/9 for Settings.",
-            key_storage_label(&storage),
-        );
     }
 
     fn execute_import_wallet(&mut self, key: &str) {
@@ -2149,19 +2069,6 @@ impl App {
             return;
         };
         match m.action {
-            WalletAction::Create => match key.code {
-                KeyCode::Esc => {
-                    self.wallet_action_modal = None;
-                }
-                KeyCode::Enter if m.confirmed => {
-                    self.execute_create_wallet();
-                    self.wallet_action_modal = None;
-                }
-                KeyCode::Enter => {
-                    m.confirmed = true;
-                }
-                _ => {}
-            },
             WalletAction::Import => match key.code {
                 KeyCode::Esc => {
                     self.wallet_action_modal = None;

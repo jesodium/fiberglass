@@ -18,15 +18,6 @@ pub struct WalletArgs {
 
 #[derive(Subcommand)]
 pub enum WalletCommand {
-    /// Generate a new random wallet and save to config
-    Create {
-        /// Overwrite existing wallet
-        #[arg(long)]
-        force: bool,
-        /// Signature type: eoa, proxy (default), or gnosis-safe
-        #[arg(long, default_value = "proxy")]
-        signature_type: String,
-    },
     /// Import an existing private key
     Import {
         /// Private key (hex, with or without 0x prefix)
@@ -68,10 +59,6 @@ pub fn execute(
     private_key_flag: Option<&str>,
 ) -> Result<()> {
     match args.command {
-        WalletCommand::Create {
-            force,
-            signature_type,
-        } => cmd_create(output, force, &signature_type),
         WalletCommand::Import {
             key,
             force,
@@ -101,50 +88,6 @@ fn guard_overwrite(force: bool) -> Result<()> {
             "A wallet already exists at {}. Use --force to overwrite.",
             config::config_path()?.display()
         );
-    }
-    Ok(())
-}
-
-fn cmd_create(output: OutputFormat, force: bool, signature_type: &str) -> Result<()> {
-    guard_overwrite(force)?;
-
-    let signer = LocalSigner::random().with_chain_id(Some(POLYGON));
-    let address = signer.address();
-    let key_hex = format!("{:#x}", signer.to_bytes());
-
-    let storage = config::save_wallet(&key_hex, POLYGON, signature_type)?;
-    let config_path = config::config_path()?;
-    let proxy_addr = derive_proxy_wallet(address, POLYGON);
-
-    match output {
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "address": address.to_string(),
-                    "proxy_address": proxy_addr.map(|a| a.to_string()),
-                    "signature_type": signature_type,
-                    "config_path": config_path.display().to_string(),
-                    "key_storage": match storage {
-                        config::KeyStorage::Keychain => "keychain",
-                        config::KeyStorage::PlaintextFile => "file",
-                    },
-                })
-            );
-        }
-        OutputFormat::Table => {
-            println!("Wallet created successfully!");
-            println!("Address:        {address}");
-            if let Some(proxy) = proxy_addr {
-                println!("Proxy wallet:   {proxy}");
-            }
-            println!("Signature type: {signature_type}");
-            println!("Config:         {}", config_path.display());
-            println!("{}", storage_line(&storage));
-            println!();
-            println!("IMPORTANT: This private key IS your funds — back it up now.");
-            println!("           If lost, your funds cannot be recovered.");
-        }
     }
     Ok(())
 }
