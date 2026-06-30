@@ -1578,7 +1578,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect) {
                 "No MCP session yet. Register the server with your AI client:".fg(DIM),
             ));
             lines.push(Line::from(Span::styled(
-                r#"  "command": "polymarket", "args": ["mcp"]"#,
+                r#"  "command": "fiberglass", "args": ["mcp"]"#,
                 Style::default().fg(ACCENT),
             )));
         }

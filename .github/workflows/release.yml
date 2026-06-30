@@ -65,13 +65,13 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../polymarket-${RELEASE_TAG}-${{ matrix.target }}.tar.gz polymarket
+          tar czf ../../../fiberglass-${RELEASE_TAG}-${{ matrix.target }}.tar.gz fiberglass
           cd ../../..
 
       - uses: actions/upload-artifact@v4
         with:
-          name: polymarket-${{ matrix.target }}
-          path: polymarket-*.tar.gz
+          name: fiberglass-${{ matrix.target }}
+          path: fiberglass-*.tar.gz
 
   release:
     needs: build
@@ -86,7 +86,7 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
-        run: sha256sum polymarket-*.tar.gz > checksums.txt
+        run: sha256sum fiberglass-*.tar.gz > checksums.txt
 
       - name: Extract release notes from CHANGELOG
         run: |
@@ -107,7 +107,7 @@ jobs:
           body_path: RELEASE_BODY.md
           generate_release_notes: true
           files: |
-            polymarket-*.tar.gz
+            fiberglass-*.tar.gz
             checksums.txt
 
   update-homebrew:
@@ -135,7 +135,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/polymarket.rb Cargo.toml Cargo.lock
+          git add Formula/fiberglass.rb Cargo.toml Cargo.lock
           git diff --cached --quiet && echo "Nothing to commit" || {
             git commit -m "release: update formula and version to ${RELEASE_TAG}"
             git push

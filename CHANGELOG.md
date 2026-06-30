@@ -7,6 +7,16 @@ tags. The section matching a release tag is published as that release's notes
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-06-30
+
+### Changed
+- Renamed the binary from `polymarket` to `fiberglass`. The Homebrew formula
+  is now `fiberglass` (`brew install fiberglass`), release assets are
+  `fiberglass-<tag>-<target>.tar.gz`, and all commands run as `fiberglass …`.
+  Config still lives in `~/.config/polymarket/` — existing wallets, settings,
+  and paper accounts are untouched.
+- Rewrote the README: shorter, lowercase, plain.
+
 ## [0.1.12] - 2026-06-30
 
 ### Changed

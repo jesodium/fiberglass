@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Updates Formula/polymarket.rb with real SHA256 hashes from a GitHub Release.
+# Updates Formula/fiberglass.rb with real SHA256 hashes from a GitHub Release.
 # Usage: scripts/update-formula.sh v0.1.0
 
 TAG="${1:?Usage: $0 <version-tag>  (e.g. v0.1.0)}"
 VERSION="${TAG#v}"  # strip leading 'v'
 
 REPO="jesodium/fiberglass"
-FORMULA="Formula/polymarket.rb"
+FORMULA="Formula/fiberglass.rb"
 
 echo "Fetching checksums for ${TAG}..."
 # Fetch via authenticated gh so this works for a private repo too (the public
@@ -20,7 +20,7 @@ CHECKSUMS=$(cat "${DL_DIR}/checksums.txt")
 get_sha() {
   local target="$1"
   local sha
-  sha=$(echo "$CHECKSUMS" | grep "polymarket-${TAG}-${target}.tar.gz" | awk '{print $1}')
+  sha=$(echo "$CHECKSUMS" | grep "fiberglass-${TAG}-${target}.tar.gz" | awk '{print $1}')
   if [ -z "$sha" ]; then
     echo "ERROR: No checksum found for target ${target}" >&2
     exit 1
@@ -36,42 +36,42 @@ SHA_ARM_LINUX=$(get_sha "aarch64-unknown-linux-gnu")
 echo "Writing ${FORMULA} for version ${VERSION}..."
 
 cat > "$FORMULA" << RUBY
-class Polymarket < Formula
-  desc "CLI for Polymarket — browse markets, trade, and manage positions"
+class Fiberglass < Formula
+  desc "Fiberglass — a trading terminal for Polymarket"
   homepage "https://github.com/${REPO}"
   version "${VERSION}"
   license "MIT"
 
   on_macos do
     on_intel do
-      url "https://github.com/${REPO}/releases/download/v#{version}/polymarket-v#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/${REPO}/releases/download/v#{version}/fiberglass-v#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "${SHA_X86_MAC}"
     end
 
     on_arm do
-      url "https://github.com/${REPO}/releases/download/v#{version}/polymarket-v#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/${REPO}/releases/download/v#{version}/fiberglass-v#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "${SHA_ARM_MAC}"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/${REPO}/releases/download/v#{version}/polymarket-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/${REPO}/releases/download/v#{version}/fiberglass-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "${SHA_X86_LINUX}"
     end
 
     on_arm do
-      url "https://github.com/${REPO}/releases/download/v#{version}/polymarket-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/${REPO}/releases/download/v#{version}/fiberglass-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "${SHA_ARM_LINUX}"
     end
   end
 
   def install
-    bin.install "polymarket"
+    bin.install "fiberglass"
   end
 
   test do
-    assert_match "polymarket", shell_output("#{bin}/polymarket --version")
+    assert_match "fiberglass", shell_output("#{bin}/fiberglass --version")
   end
 end
 RUBY

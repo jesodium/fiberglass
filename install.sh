@@ -2,7 +2,7 @@
 set -e
 
 REPO="jesodium/fiberglass"
-BINARY="polymarket"
+BINARY="fiberglass"
 INSTALL_DIR="/usr/local/bin"
 
 get_target() {
@@ -84,7 +84,7 @@ main() {
   chmod +x "$INSTALL_DIR/$BINARY"
 
   echo "Installed ${BINARY} to ${INSTALL_DIR}/${BINARY}"
-  echo "Run 'polymarket --help' to get started."
+  echo "Run 'fiberglass --help' to get started."
 }
 
 main

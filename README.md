@@ -1,743 +1,126 @@
-# Fiberglass
+# fiberglass
 
-> Fiberglass is a local-first prediction-market **trading terminal** for Polymarket — browse markets, place market & limit orders, manage positions, and run copy-trading from a keyboard-driven TUI (or as a JSON API for scripts and agents).
+a little trading terminal for polymarket. lives in your terminal. browse
+markets, place orders, run a paper account, copy other wallets, poke it from a
+script or an ai agent. that's it.
 
-<p align="center">
-  <a href="https://github.com/jesodium/fiberglass/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust&logoColor=white">
-  <img alt="TUI" src="https://img.shields.io/badge/TUI-ratatui-00b3b3?logo=gnometerminal&logoColor=white">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-yellow.svg">
-  <img alt="Status: WIP" src="https://img.shields.io/badge/status-heavily%20WIP-red">
-  <img alt="Paper trading" src="https://img.shields.io/badge/paper%20trading-yes-brightgreen">
-</p>
+```
+   .--------------------------------------------------.
+   |  ~ fiberglass ~                                  |
+   |                                                  |
+   |   [ rust 1.88+ ]   [ macos / linux ]   [ mit ]   |
+   |   [ paper trading: yes ]   [ live: careful!! ]   |
+   |                                                  |
+   |        keyboard-driven. local-first.             |
+   '--------------------------------------------------'
+```
 
-> [!CAUTION]
-> **❗ THIS IS HEAVILY WORK IN PROGRESS, DO NOT PUT REAL MONEY UNLESS YOU ARE WILLING TO LOSE IT ❗**
->
-> APIs, commands, on-chain interactions, and live order routing are experimental and **not battle-tested**. Live mode signs and submits **real orders with real funds**. Start with `--paper`. Verify every transaction. You are solely responsible for any losses.
+## heads up
 
----
+still very much work in progress. do not put in money you can't lose.
 
-### Feature status
+live mode signs and sends **real orders with real funds**, and none of it is
+battle-tested. start with `--paper`. check every transaction yourself. if you
+lose money it's on you.
 
-| Area | Status | Notes |
-| --- | :---: | --- |
-| Market & event browsing | ✅ | Gamma + CLOB data, JSON output |
-| Market & limit orders | ✅ | Buy/sell, open orders, cancel, history |
-| Paper trading | ✅ | $10k virtual account, realistic book-driven fills |
-| Trading terminal (TUI) | ✅ | 11 views (9 tabs), live order book, modal order entry |
-| Take-profit / stop-loss / trailing | ✅ | Per-position exit guard: TP %, SL %, trailing stop |
-| Copy-trading | ✅ | Follow wallets, mirror trades (15s poll) |
-| Trading settings | ✅ | Cautious/Standard/Expert modes, quickbuy/quicksell presets |
-| MCP server | ✅ | `polymarket mcp` — 37 tools for AI agents, paper + live |
-| Live trading | 🚧 | Real CLOB orders wired — **untested with real funds** |
-| Risk caps / kill-switch | ⏳ | Planned before autonomous live is safe |
-| Hosted agents | ⏳ | Planned |
-
-## Install
-
-### Homebrew (macOS / Linux)
+## install
 
 ```bash
+# homebrew
 brew tap jesodium/fiberglass https://github.com/jesodium/fiberglass
-brew install polymarket
-```
+brew install fiberglass
 
-### Shell script
-
-```bash
+# or the install script
 curl -sSL https://raw.githubusercontent.com/jesodium/fiberglass/main/install.sh | sh
-```
 
-### Build from source
-
-```bash
+# or from source
 git clone https://github.com/jesodium/fiberglass
 cd fiberglass
 cargo install --path .
 ```
 
-## Trading Terminal (TUI)
+binary is called `fiberglass`.
 
-Primary interface is a keyboard-driven trading terminal — Bloomberg Terminal style.
+## the terminal
 
-```bash
-polymarket tui            # LIVE mode — real wallet + CLOB (needs a wallet)
-polymarket tui --paper    # PAPER mode — $10,000 simulated account, no wallet
-```
-
-Mode shown in top-left (red **⏺ LIVE** / green **◆ PAPER**) and colors the whole frame. In live mode the terminal mirrors real balance and positions; order modal submits real signed orders to the CLOB. In paper mode everything is simulated. Tabs (9 top-level, switch with `Tab` or `1`–`9`):
-
-```
- 1·Dashboard  2·Markets  3·Portfolio  4·Positions  5·Orders  6·History  7·Copytrade  8·Logs  9·Settings
-┌─ POLYMARKET TERMINAL   ● live   142 markets ─────────────────────────────────┐
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Portfolio Value │ Cash Balance │ Daily PnL  │ Total PnL                        │
-│   $10,240.00    │  $9,120.00   │  +$140.00  │  +$240.00                        │
-├───────────────────────────┬──────────────────────────────────────────────────┤
-│ Open Positions        3   │ Time      Side  Market               Size  Price  │
-│ Open Orders           2   │ 14:02:11  BUY   Will BTC top $100k…  100   0.612  │
-│ Running Strategies    1   │ 14:01:55  SELL  Fed cuts in March…    50   0.480  │
-│ ROI                +2.4%  │ …                                                  │
-└───────────────────────────┴──────────────────────────────────────────────────┘
- ↑↓ move · Enter open · / search · b buy · s sell · p quick preset · q quit
-```
-
-- **Markets** — browse / search / sort, `Enter` to open a market. Paste a `polymarket.com` link into search to jump straight to that market.
-- **Market detail** — live order book, place market **and** limit orders from a modal (`b`/`s`). Buy ticket has take-profit / stop-loss fields, `p` cycles quickbuy ($) / quicksell (%) presets.
-- **Orders** — review open orders and cancel with `c`, in paper **and** live (live orders sync from CLOB).
-- **Copytrade** — view followed wallets, their recent trades, and copy-activity log.
-- **Settings** — edit trading settings in place (`Enter` to edit / cycle): trading mode (Cautious / Standard / Expert), confirmation threshold, quickbuy/quicksell presets, slippage, default TP/SL/trailing. In live mode shows wallet (EOA, proxy, balance), can reveal private key for export (`w`).
-
-## Take-Profit / Stop-Loss / Trailing Stop
-
-Arm an exit guard on any position from the TUI order modal or via settings defaults:
+main way to use it is the tui:
 
 ```bash
-polymarket settings take-profit 40    # +40% take profit
-polymarket settings stop-loss 25      # -25% stop loss
-polymarket settings trailing 10       # 10% off peak (optional)
+fiberglass tui            # live mode, needs a wallet
+fiberglass tui --paper    # paper mode, $10k fake money, no wallet
 ```
 
-With defaults set, every buy from the TUI auto-arms a guard. When a held position crosses a threshold, the guard market-sells it. Guards persist across restarts in `~/.config/polymarket/guards.json`.
+```
+ 1 dashboard  2 markets  3 portfolio  4 positions  5 orders ...
+ .------------------------------------------------------------.
+ |  portfolio   $10,240    cash  $9,120    pnl  +$240         |
+ |------------------------------------------------------------|
+ |  open positions  3   |  14:02  buy   will btc top 100k  .. |
+ |  open orders     2   |  14:01  sell  fed cuts in march  .. |
+ '------------------------------------------------------------'
+  arrows move . enter open . / search . b buy . s sell . q quit
+```
 
-## Trading Settings
+tabs switch with `tab` or `1`-`9`. red frame = live, green = paper. open a
+market with `enter`, buy/sell with `b`/`s`, search with `/`. paste a
+polymarket.com link into search to jump straight there.
 
-Execution settings shared by the TUI and CLI:
+## paper trading
+
+no wallet, no keys, fake balance against live prices.
 
 ```bash
-polymarket settings                   # show all
-polymarket settings mode expert       # cautious | standard | expert
-polymarket settings threshold 250     # Standard-mode confirm threshold ($)
-polymarket settings quickbuy 10,25,50,100
-polymarket settings quicksell 25,50,100
-polymarket settings slippage 2
-polymarket settings take-profit 40    # default TP % for new positions
-polymarket settings stop-loss 25      # default SL % for new positions
-polymarket settings trailing 10       # default trailing % for new positions
+fiberglass paper enable
+fiberglass paper buy <token> --amount 100
+fiberglass paper sell <token> --size 50
+fiberglass paper portfolio
+fiberglass paper stats
 ```
 
-- **Cautious** — every order asks for confirmation.
-- **Standard** (default) — only orders at/above threshold confirm.
-- **Expert** — instant execution, no confirmation.
+market orders walk the real book so you pay real-ish slippage. limit orders
+rest until the market crosses them. data sits in
+`~/.config/polymarket/paper_account.json`.
 
-## Quick Start
+## the cli
+
+everything the tui does also works as a plain command. a few:
 
 ```bash
-# No wallet needed — browse markets immediately
-polymarket markets list --limit 5
-polymarket markets search "election"
-polymarket events list --tag politics
-
-# Check a specific market
-polymarket markets get will-trump-win-the-2024-election
-
-# JSON output for scripts
-polymarket -o json markets list --limit 3
+fiberglass markets list --limit 5
+fiberglass markets search "election"
+fiberglass clob book <token>
+fiberglass data positions 0xwallet
+fiberglass copytrade add 0xwallet --label whale --max-size 50
+fiberglass -o json markets list --limit 100   # json for scripts
 ```
 
-To trade, set up a wallet:
+add `-o json` to anything for machine output. run `fiberglass --help` (or
+`fiberglass <group> --help`) for the full list — markets, events, clob, ctf,
+bridge, wallet, approve, settings, paper, copytrade, and so on.
 
-```bash
-polymarket setup
-# Or manually:
-polymarket wallet create
-polymarket approve set
-```
+want a wallet? `fiberglass setup` walks you through it. most read-only
+commands don't need one.
 
-## Configuration
+## ai agents (mcp)
 
-### Wallet Setup
-
-The CLI needs a private key to sign orders and on-chain transactions. Three ways to provide it (checked in this order):
-
-1. **CLI flag**: `--private-key 0xabc...`
-2. **Environment variable**: `POLYMARKET_PRIVATE_KEY=0xabc...`
-3. **Config file**: `~/.config/polymarket/config.json`
-
-```bash
-# Create a new wallet (generates random key, saves to config)
-polymarket wallet create
-
-# Import an existing key
-polymarket wallet import 0xabc123...
-
-# Check what's configured
-polymarket wallet show
-```
-
-The config file (`~/.config/polymarket/config.json`):
+`fiberglass mcp` is a model context protocol server over stdio. point a client
+at it:
 
 ```json
-{
-  "private_key": "0x...",
-  "chain_id": 137,
-  "signature_type": "proxy"
-}
+{ "mcpServers": { "fiberglass": { "command": "fiberglass", "args": ["mcp"] } } }
 ```
 
-### Signature Types
+claude code: `claude mcp add fiberglass -- fiberglass mcp`. paper vs live is
+respected, so the same money warning applies.
 
-- `proxy` (default) — uses Polymarket's proxy wallet system
-- `eoa` — signs directly with your key
-- `gnosis-safe` — for multisig wallets
+## config
 
-Override per-command with `--signature-type eoa` or via `POLYMARKET_SIGNATURE_TYPE`.
+lives in `~/.config/polymarket/` — wallet, settings, paper account, guards,
+copytrade roster. private key is stored in plaintext (0600), so treat the
+machine accordingly.
 
-### What Needs a Wallet
+see [changelog.md](CHANGELOG.md) for what changed.
 
-Most commands work without a wallet — browsing markets, viewing order books, checking prices. You only need a wallet for:
+## license
 
-- Placing and canceling orders (`clob create-order`, `clob market-order`, `clob cancel-*`)
-- Checking your balances and trades (`clob balance`, `clob trades`, `clob orders`)
-- On-chain operations (`approve set`, `ctf split/merge/redeem`)
-- Reward and API key management (`clob rewards`, `clob create-api-key`)
-
-Paper trading (`polymarket paper ...`) needs no wallet at all — see [Paper Trading](#paper-trading-simulated-no-wallet-needed).
-
-## Output Formats
-
-Every command supports `--output table` (default) and `--output json`.
-
-```bash
-# Human-readable table (default)
-polymarket markets list --limit 2
-```
-
-```
- Question                            Price (Yes)  Volume   Liquidity  Status
- Will Trump win the 2024 election?   52.00¢       $145.2M  $1.2M      Active
- Will BTC hit $100k by Dec 2024?     67.30¢       $89.4M   $430.5K    Active
-```
-
-```bash
-# Machine-readable JSON
-polymarket -o json markets list --limit 2
-```
-
-```json
-[
-  { "id": "12345", "question": "Will Trump win the 2024 election?", "outcomePrices": ["0.52", "0.48"], ... },
-  { "id": "67890", "question": "Will BTC hit $100k by Dec 2024?", ... }
-]
-```
-
-Short form: `-o json` or `-o table`.
-
-Errors follow the same pattern — table mode prints `Error: ...` to stderr, JSON mode prints `{"error": "..."}` to stdout. Non-zero exit code either way.
-
-## Commands
-
-### Markets
-
-```bash
-# List markets with filters
-polymarket markets list --limit 10
-polymarket markets list --active true --order volume_num
-polymarket markets list --closed false --limit 50 --offset 25
-
-# Get a single market by ID or slug
-polymarket markets get 12345
-polymarket markets get will-trump-win
-
-# Search
-polymarket markets search "bitcoin" --limit 5
-
-# Get tags for a market
-polymarket markets tags 12345
-```
-
-**Flags for `markets list`**: `--limit`, `--offset`, `--order`, `--ascending`, `--active`, `--closed`
-
-### Events
-
-Events group related markets (e.g. "2024 Election" contains multiple yes/no markets).
-
-```bash
-polymarket events list --limit 10
-polymarket events list --tag politics --active true
-polymarket events get 500
-polymarket events tags 500
-```
-
-**Flags for `events list`**: `--limit`, `--offset`, `--order`, `--ascending`, `--active`, `--closed`, `--tag`
-
-### Tags, Series, Comments, Profiles, Sports
-
-```bash
-# Tags
-polymarket tags list
-polymarket tags get politics
-polymarket tags related politics
-polymarket tags related-tags politics
-
-# Series (recurring events)
-polymarket series list --limit 10
-polymarket series get 42
-
-# Comments on an entity
-polymarket comments list --entity-type event --entity-id 500
-polymarket comments get abc123
-polymarket comments by-user 0xf5E6...
-
-# Public profiles
-polymarket profiles get 0xf5E6...
-
-# Sports metadata
-polymarket sports list
-polymarket sports market-types
-polymarket sports teams --league NFL --limit 32
-```
-
-### Order Book & Prices (CLOB)
-
-All read-only — no wallet needed.
-
-```bash
-# Check API health
-polymarket clob ok
-
-# Prices
-polymarket clob price 48331043336612883... --side buy
-polymarket clob midpoint 48331043336612883...
-polymarket clob spread 48331043336612883...
-
-# Batch queries (comma-separated token IDs)
-polymarket clob batch-prices "TOKEN1,TOKEN2" --side buy
-polymarket clob midpoints "TOKEN1,TOKEN2"
-polymarket clob spreads "TOKEN1,TOKEN2"
-
-# Order book
-polymarket clob book 48331043336612883...
-polymarket clob books "TOKEN1,TOKEN2"
-
-# Last trade
-polymarket clob last-trade 48331043336612883...
-
-# Market info
-polymarket clob market 0xABC123...  # by condition ID
-polymarket clob markets             # list all
-
-# Price history
-polymarket clob price-history 48331043336612883... --interval 1d --fidelity 30
-
-# Metadata
-polymarket clob tick-size 48331043336612883...
-polymarket clob fee-rate 48331043336612883...
-polymarket clob neg-risk 48331043336612883...
-polymarket clob time
-polymarket clob geoblock
-```
-
-**Interval options for `price-history`**: `1m`, `1h`, `6h`, `1d`, `1w`, `max`
-
-### Trading (CLOB, authenticated)
-
-Requires a configured wallet.
-
-```bash
-# Place a limit order (buy 10 shares at $0.50)
-polymarket clob create-order \
-  --token 48331043336612883... \
-  --side buy --price 0.50 --size 10
-
-# Place a market order (buy $5 worth)
-polymarket clob market-order \
-  --token 48331043336612883... \
-  --side buy --amount 5
-
-# Post multiple orders at once
-polymarket clob post-orders \
-  --tokens "TOKEN1,TOKEN2" \
-  --side buy \
-  --prices "0.40,0.60" \
-  --sizes "10,10"
-
-# Cancel
-polymarket clob cancel ORDER_ID
-polymarket clob cancel-orders "ORDER1,ORDER2"
-polymarket clob cancel-market --market 0xCONDITION...
-polymarket clob cancel-all
-
-# View your orders and trades
-polymarket clob orders
-polymarket clob orders --market 0xCONDITION...
-polymarket clob order ORDER_ID
-polymarket clob trades
-
-# Check balances
-polymarket clob balance --asset-type collateral
-polymarket clob balance --asset-type conditional --token 48331043336612883...
-polymarket clob update-balance --asset-type collateral
-```
-
-**Order types**: `GTC` (default), `FOK`, `GTD`, `FAK`. Add `--post-only` for limit orders.
-
-### Paper Trading (simulated, no wallet needed)
-
-Practice trading with a virtual balance against live Polymarket prices. Paper trading is fully isolated from your wallet and the live exchange — no keys, no signing, no real funds.
-
-```bash
-# Turn on paper mode (creates a $10,000 virtual account the first time)
-polymarket paper enable
-
-# Simulated market buy: spend $100 at the current best asks
-polymarket paper buy 48331043336612883... --amount 100
-
-# Simulated limit buy: rests until the market crosses your price
-polymarket paper buy 48331043336612883... --price 0.45 --size 50
-
-# Simulated sells: market by default, limit with --price
-polymarket paper sell 48331043336612883... --size 50
-polymarket paper sell 48331043336612883... --size 50 --price 0.80
-
-# Portfolio: cash, positions, realized/unrealized PnL, ROI
-polymarket paper portfolio
-
-# Resting limit orders (filled automatically when the market crosses)
-polymarket paper orders
-polymarket paper cancel ORDER_ID
-
-# Trade log and performance analytics
-polymarket paper history
-polymarket paper stats          # win rate, best/worst trade, daily PnL, equity curve
-
-# Manage the account
-polymarket paper status
-polymarket paper reset --balance 25000   # start over with a custom balance
-polymarket paper disable                 # back to live trading (data is kept)
-```
-
-While paper mode is enabled, `clob create-order` and `clob market-order` route to the simulator automatically (a `[paper]` notice is printed). You can also force a single simulated order without toggling the mode:
-
-```bash
-polymarket clob market-order --token TOKEN_ID --side buy --amount 5 --paper
-polymarket clob create-order --token TOKEN_ID --side buy --price 0.50 --size 10 --paper
-```
-
-**How fills are simulated**
-
-- Market orders walk the live order book level by level, so large orders pay realistic slippage. If the book can't absorb the full size, the order is rejected (fill-or-kill).
-- Limit orders that cross the market fill immediately at the touch (with price improvement if your limit is better). Otherwise they rest, reserving cash (buys) or shares (sells), and fill at your limit price once any paper command observes the market crossing it.
-- Positions track average entry price; realized PnL is computed per sell against that average.
-
-Paper data persists in `~/.config/polymarket/paper_account.json` (override with `POLYMARKET_PAPER_FILE`). Wallet commands never touch it.
-
-### Copy-Trading
-
-Mirror trades from followed wallets. Polls every 15 seconds and places matching orders on your account (paper or live).
-
-```bash
-# Manage the roster
-polymarket copytrade add 0xWALLET_ADDRESS --label "my-trader" --max-size 50 --min-confidence 0.8
-polymarket copytrade remove 0xWALLET_ADDRESS
-polymarket copytrade list
-
-# Enable/disable individual traders or the whole engine
-polymarket copytrade enable 0xWALLET_ADDRESS
-polymarket copytrade disable 0xWALLET_ADDRESS
-
-# Show config and status
-polymarket copytrade show
-
-# Run the engine (starts when the TUI or paper mode is active)
-polymarket copytrade run
-```
-
-Copy-trade config in `~/.config/polymarket/copytrades.json`.
-
-### Rewards & API Keys (CLOB, authenticated)
-
-```bash
-polymarket clob rewards --date 2024-06-15
-polymarket clob earnings --date 2024-06-15
-polymarket clob earnings-markets --date 2024-06-15
-polymarket clob reward-percentages
-polymarket clob current-rewards
-polymarket clob market-reward 0xCONDITION...
-
-# Check if orders are scoring rewards
-polymarket clob order-scoring ORDER_ID
-polymarket clob orders-scoring "ORDER1,ORDER2"
-
-# API key management
-polymarket clob api-keys
-polymarket clob create-api-key
-polymarket clob delete-api-key
-
-# Account status
-polymarket clob account-status
-polymarket clob notifications
-polymarket clob delete-notifications "NOTIF1,NOTIF2"
-```
-
-### On-Chain Data
-
-Public data — no wallet needed.
-
-```bash
-# Portfolio
-polymarket data positions 0xWALLET_ADDRESS
-polymarket data closed-positions 0xWALLET_ADDRESS
-polymarket data value 0xWALLET_ADDRESS
-polymarket data traded 0xWALLET_ADDRESS
-
-# Trade history
-polymarket data trades 0xWALLET_ADDRESS --limit 50
-
-# Activity
-polymarket data activity 0xWALLET_ADDRESS
-
-# Market data
-polymarket data holders 0xCONDITION_ID
-polymarket data open-interest 0xCONDITION_ID
-polymarket data volume 12345  # event ID
-
-# Leaderboards
-polymarket data leaderboard --period month --order-by pnl --limit 10
-polymarket data builder-leaderboard --period week
-polymarket data builder-volume --period month
-```
-
-### Contract Approvals
-
-Before trading, Polymarket contracts need ERC-20 (pUSD) and ERC-1155 (CTF token) approvals.
-
-```bash
-# Check current approvals (read-only)
-polymarket approve check
-polymarket approve check 0xSOME_ADDRESS
-
-# Approve all contracts (sends on-chain transactions, needs MATIC for gas)
-polymarket approve set
-```
-
-### CTF Operations
-
-Split, merge, and redeem conditional tokens directly on-chain.
-
-```bash
-# Split $10 pUSD into YES/NO tokens
-polymarket ctf split --condition 0xCONDITION... --amount 10
-
-# Merge tokens back to pUSD
-polymarket ctf merge --condition 0xCONDITION... --amount 10
-
-# Redeem winning tokens after resolution
-polymarket ctf redeem --condition 0xCONDITION...
-
-# Redeem neg-risk positions
-polymarket ctf redeem-neg-risk --condition 0xCONDITION... --amounts "10,5"
-
-# Calculate IDs (read-only, no wallet needed)
-polymarket ctf condition-id --oracle 0xORACLE... --question 0xQUESTION... --outcomes 2
-polymarket ctf collection-id --condition 0xCONDITION... --index-set 1
-polymarket ctf position-id --collection 0xCOLLECTION...
-```
-
-`--amount` is in pUSD (e.g., `10` = $10). The `--partition` flag defaults to binary (`1,2`). On-chain operations require MATIC for gas on Polygon.
-
-### Bridge
-
-Deposit assets from other chains into Polymarket.
-
-```bash
-# Get deposit addresses (EVM, Solana, Bitcoin)
-polymarket bridge deposit 0xWALLET_ADDRESS
-
-# List supported chains and tokens
-polymarket bridge supported-assets
-
-# Check deposit status
-polymarket bridge status 0xDEPOSIT_ADDRESS
-```
-
-### Wallet Management
-
-```bash
-polymarket wallet create               # Generate new random wallet
-polymarket wallet create --force       # Overwrite existing
-polymarket wallet import 0xKEY...      # Import existing key
-polymarket wallet address              # Print wallet address
-polymarket wallet show                 # Full wallet info (address, source, config path)
-polymarket wallet reset                # Delete config (prompts for confirmation)
-polymarket wallet reset --force        # Delete without confirmation
-```
-
-### Interactive Shell
-
-```bash
-polymarket shell
-# polymarket> markets list --limit 3
-# polymarket> clob book 48331043336612883...
-# polymarket> exit
-```
-
-Supports command history. All commands work the same as the CLI, just without the `polymarket` prefix.
-
-### MCP Server (AI agents)
-
-`polymarket mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, exposing the CLI's capabilities as tools an AI agent can call. Register it with any MCP client:
-
-```json
-{
-  "mcpServers": {
-    "polymarket": { "command": "polymarket", "args": ["mcp"] }
-  }
-}
-```
-
-For Claude Code: `claude mcp add polymarket -- polymarket mcp`.
-
-It exposes 37 tools — market/event discovery, CLOB and on-chain data, wallet/account, order placement, and full paper trading — plus a guarded `run_cli` escape hatch for any other subcommand. Each tool re-invokes the CLI with `--output json`, so behaviour matches the CLI exactly:
-
-- **Paper vs live** is honoured automatically. With paper mode on (`polymarket paper enable`) the order tools simulate fills; otherwise they sign and submit to the live CLOB using your configured wallet. Order tools also accept a per-call `paper` argument.
-- **Live trading moves real funds** — the same caveat as the CLI applies.
-
-The TUI **Settings** tab shows a live MCP panel: whether a client is connected, its name, tool-call count, and last activity.
-
-### Other
-
-```bash
-polymarket status     # API health check
-polymarket setup      # Guided first-time setup wizard
-polymarket upgrade    # Update to the latest version
-polymarket --version
-polymarket --help
-```
-
-## Common Workflows
-
-### Browse and research markets
-
-```bash
-polymarket markets search "bitcoin" --limit 5
-polymarket markets get bitcoin-above-100k
-polymarket clob book 48331043336612883...
-polymarket clob price-history 48331043336612883... --interval 1d
-```
-
-### Set up a new wallet and start trading
-
-```bash
-polymarket wallet create
-polymarket approve set                    # needs MATIC for gas
-polymarket clob balance --asset-type collateral
-polymarket clob market-order --token TOKEN_ID --side buy --amount 5
-```
-
-### Monitor your portfolio
-
-```bash
-polymarket data positions 0xYOUR_ADDRESS
-polymarket data value 0xYOUR_ADDRESS
-polymarket clob orders
-polymarket clob trades
-```
-
-### Place and manage limit orders
-
-```bash
-# Place order
-polymarket clob create-order --token TOKEN_ID --side buy --price 0.45 --size 20
-
-# Check it
-polymarket clob orders
-
-# Cancel if needed
-polymarket clob cancel ORDER_ID
-
-# Or cancel everything
-polymarket clob cancel-all
-```
-
-### Script with JSON output
-
-```bash
-# Pipe market data to jq
-polymarket -o json markets list --limit 100 | jq '.[].question'
-
-# Check prices programmatically
-polymarket -o json clob midpoint TOKEN_ID | jq '.mid'
-
-# Error handling in scripts
-if ! result=$(polymarket -o json clob balance --asset-type collateral 2>/dev/null); then
-  echo "Failed to fetch balance"
-fi
-```
-
-## Architecture
-
-```
-src/
-  main.rs           -- Entry point, Cli struct, Commands enum, dispatch
-  auth.rs           -- Signer factory (private key → alloy signer + provider)
-  config.rs         -- Wallet config persistence (~/.config/polymarket/config.json)
-  settings.rs       -- Trading mode presets, quickbuy/quicksell, slippage, TP/SL defaults
-  trade.rs          -- Live order placement (shared by TUI order modal + copy-trade)
-  guard.rs          -- Per-token TP/SL/trailing-stop exit guard evaluation
-  shell.rs          -- Interactive line-based REPL (rustyline)
-  updater.rs        -- Self-update check against GitHub releases
-
-  commands/         -- CLI subcommand implementations (one per command group)
-    clob.rs         -- CLOB: price, book, orders, trades, balances, etc.
-    markets.rs      -- Markets list/get/search/tags
-    events.rs       -- Events list/get/tags
-    tags.rs         -- Tags list/get/related
-    series.rs       -- Series list/get
-    comments.rs     -- Comments list/get/by-user
-    profiles.rs     -- Profiles get
-    sports.rs       -- Sports list/market-types/teams
-    data.rs         -- On-chain data (positions, holders, leaderboards)
-    ctf.rs          -- CTF split/merge/redeem/decode
-    bridge.rs       -- Bridge deposit/supported-assets/status
-    wallet.rs       -- Wallet create/import/address/show/reset
-    paper.rs        -- Paper trading enable/disable/buy/sell/portfolio
-    copytrade.rs    -- Copy-trade roster management
-    approve.rs      -- Contract approvals
-    settings.rs     -- Trading settings
-    setup.rs        -- Guided first-time setup
-    upgrade.rs      -- Self-upgrade
-
-  tui/              -- ratatui-based interactive trading terminal
-    app.rs          -- State machine, 11 views, input handling
-    ui.rs           -- ratatui rendering
-    data.rs         -- Background data sync (polls Gamma/CLOB)
-    live.rs         -- Wallet/balance polling
-
-  mcp/              -- Model Context Protocol stdio server
-    mod.rs          -- JSON-RPC loop, subprocess dispatch
-    tools.rs        -- 37 tool schemas, tool→CLI-argv mapping
-    status.rs       -- MCP liveness file (read by TUI Settings tab)
-
-  paper/            -- Paper trading simulation
-    types.rs        -- PaperAccount, Position, OpenOrder, Trade, Stats
-    store.rs        -- JSON persistence (~/.config/polymarket/paper_account.json)
-    engine.rs       -- Fill simulation against live quotes
-    quotes.rs       -- Live order-book feed for the simulator
-
-  copytrade/        -- Copy-trading engine
-    config.rs       -- Followed-trader roster + per-trader sizing rules
-    engine.rs       -- Mirrors trades from followed wallets (15s poll)
-
-  output/           -- Table (tabled) + JSON formatters, one per domain
-```
-
-### Data Flow (TUI)
-
-Keyboard → `App` state → shared state (Arc<Mutex<_>>) read by:
-- render loop (ratatui output)
-- background data loop (Gamma/CLOB API polling)
-- guard evaluator (TP/SL checks each tick)
-- copy-trade engine (followed-wallet checks every 15s)
-
-### Paper vs Live
-
-Paper mode (`--paper` flag or TUI toggle) uses `paper/` engine with a local JSON store. Orders are simulated against live quote feeds. No wallet signer is needed. Live mode requires a configured private key and approved USDC/CTF allowances.
-
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
-## License
-
-MIT
+mit

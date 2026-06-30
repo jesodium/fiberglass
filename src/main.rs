@@ -19,7 +19,11 @@ use clap_complete::Shell;
 use output::OutputFormat;
 
 #[derive(Parser)]
-#[command(name = "polymarket", about = "Polymarket CLI", version)]
+#[command(
+    name = "fiberglass",
+    about = "Fiberglass — a trading terminal for Polymarket",
+    version
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -90,7 +94,7 @@ enum Commands {
     Upgrade,
     /// Generate a shell completion script (bash, zsh, fish, powershell, elvish)
     ///
-    /// Example: `polymarket completion zsh > ~/.zfunc/_polymarket`
+    /// Example: `fiberglass completion zsh > ~/.zfunc/_fiberglass`
     Completion {
         /// Target shell
         shell: Shell,
@@ -122,7 +126,7 @@ async fn main() -> ExitCode {
         && !skip_update
         && let Some(tag) = updater::check_update()
     {
-        eprintln!("\nUpdate {tag} available — run `polymarket upgrade` to install.");
+        eprintln!("\nUpdate {tag} available — run `fiberglass upgrade` to install.");
     }
 
     ExitCode::SUCCESS

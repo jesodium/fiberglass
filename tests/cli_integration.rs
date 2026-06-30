@@ -4,7 +4,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn polymarket() -> Command {
-    let mut cmd = Command::cargo_bin("polymarket").unwrap();
+    let mut cmd = Command::cargo_bin("fiberglass").unwrap();
     cmd.env_remove("POLYMARKET_PRIVATE_KEY");
     cmd.env_remove("POLYMARKET_SIGNATURE_TYPE");
     cmd
@@ -38,7 +38,7 @@ fn version_outputs_binary_name() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("polymarket"));
+        .stdout(predicate::str::contains("fiberglass"));
 }
 
 #[test]
@@ -103,8 +103,8 @@ fn completion_zsh_emits_script() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("#compdef polymarket")
-                .and(predicate::str::contains("_polymarket")),
+            predicate::str::contains("#compdef fiberglass")
+                .and(predicate::str::contains("_fiberglass")),
         );
 }
 

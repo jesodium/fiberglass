@@ -22,7 +22,7 @@ pub async fn run_shell() -> anyhow::Result<()> {
                 let _ = rl.add_history_entry(line);
 
                 let args = split_args(line);
-                let mut full_args = vec!["polymarket".to_string()];
+                let mut full_args = vec!["fiberglass".to_string()];
                 full_args.extend(args);
 
                 if let Some(cmd) = full_args.get(1) {

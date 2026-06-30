@@ -5,7 +5,7 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 const REPO: &str = "jesodium/fiberglass";
-const BINARY: &str = "polymarket";
+const BINARY: &str = "fiberglass";
 
 pub fn execute() -> anyhow::Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");

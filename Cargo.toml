@@ -1,6 +1,6 @@
 [package]
 name = "fiberglass"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 rust-version = "1.88.0"
 description = "Fiberglass — a trading terminal for Polymarket: browse markets, trade, and manage positions"
@@ -10,7 +10,7 @@ keywords = ["polymarket", "prediction-markets", "trading", "cli"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "polymarket"
+name = "fiberglass"
 path = "src/main.rs"
 
 [dependencies]
