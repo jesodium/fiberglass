@@ -48,3 +48,6 @@ see [changelog.md](CHANGELOG.md) for what changed.
 ## license
 
 im not sure yet
+
+# ai usage
+ai was used in the making of this project (claude code)
