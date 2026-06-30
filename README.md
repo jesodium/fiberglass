@@ -1,20 +1,14 @@
 # fiberglass
 
-a little trading terminal for polymarket. lives in your terminal. browse
-markets, place orders, run a paper account, copy other wallets, poke it from a
-script or an ai agent. that's it.
+a rewritten fork of the polymarket cli built for AI agent support and backtesting with paper trading.
 
 ![macos](https://img.shields.io/badge/macos-000000?logo=apple&logoColor=white)
 ![linux](https://img.shields.io/badge/linux-FCC624?logo=linux&logoColor=black)
 ![mit](https://img.shields.io/badge/license-mit-green)
 ![live](https://img.shields.io/badge/live-careful-red)
 
-> [!CAUTION]
-> do not use real funds unless at your own risk.
->
-> still heavily work in progress. live mode signs and sends real orders with
-> real funds, and none of it is battle-tested. start with `--paper`, check
-> every transaction yourself. if you lose money it's on you.
+## Use your own money at your own risk!
+The live mode has not been tested yet; if you lose your money, it's your problem.
 
 ## install
 
@@ -32,79 +26,14 @@ cd fiberglass
 cargo install --path .
 ```
 
-binary is called `fiberglass`.
+## the TUI
 
-## the terminal
-
-main way to use it is the tui:
+main way to use it:
 
 ```bash
 fiberglass tui            # live mode, needs a wallet
 fiberglass tui --paper    # paper mode, $10k fake money, no wallet
 ```
-
-```
- 1 dashboard  2 markets  3 portfolio  4 positions  5 orders ...
- .------------------------------------------------------------.
- |  portfolio   $10,240    cash  $9,120    pnl  +$240         |
- |------------------------------------------------------------|
- |  open positions  3   |  14:02  buy   will btc top 100k  .. |
- |  open orders     2   |  14:01  sell  fed cuts in march  .. |
- '------------------------------------------------------------'
-  arrows move . enter open . / search . b buy . s sell . q quit
-```
-
-tabs switch with `tab` or `1`-`9`. red frame = live, green = paper. open a
-market with `enter`, buy/sell with `b`/`s`, search with `/`. paste a
-polymarket.com link into search to jump straight there.
-
-## paper trading
-
-no wallet, no keys, fake balance against live prices.
-
-```bash
-fiberglass paper enable
-fiberglass paper buy <token> --amount 100
-fiberglass paper sell <token> --size 50
-fiberglass paper portfolio
-fiberglass paper stats
-```
-
-market orders walk the real book so you pay real-ish slippage. limit orders
-rest until the market crosses them. data sits in
-`~/.config/polymarket/paper_account.json`.
-
-## the cli
-
-everything the tui does also works as a plain command. a few:
-
-```bash
-fiberglass markets list --limit 5
-fiberglass markets search "election"
-fiberglass clob book <token>
-fiberglass data positions 0xwallet
-fiberglass copytrade add 0xwallet --label whale --max-size 50
-fiberglass -o json markets list --limit 100   # json for scripts
-```
-
-add `-o json` to anything for machine output. run `fiberglass --help` (or
-`fiberglass <group> --help`) for the full list — markets, events, clob, ctf,
-bridge, wallet, approve, settings, paper, copytrade, and so on.
-
-want a wallet? `fiberglass setup` walks you through it. most read-only
-commands don't need one.
-
-## ai agents (mcp)
-
-`fiberglass mcp` is a model context protocol server over stdio. point a client
-at it:
-
-```json
-{ "mcpServers": { "fiberglass": { "command": "fiberglass", "args": ["mcp"] } } }
-```
-
-claude code: `claude mcp add fiberglass -- fiberglass mcp`. paper vs live is
-respected, so the same money warning applies.
 
 ## config
 
@@ -120,4 +49,4 @@ see [changelog.md](CHANGELOG.md) for what changed.
 
 ## license
 
-mit
+im not sure yet
