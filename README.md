@@ -36,9 +36,8 @@ fiberglass tui --paper    # paper mode, $10k fake money, no wallet
 
 ## config
 
-lives in `~/.config/polymarket/` — wallet, settings, paper account, guards,
-copytrade roster. private key is stored in plaintext (0600), so treat the
-machine accordingly.
+lives in `~/.config/polymarket/` your wallet, settings, paper account, guards,
+copytrade roster. private key is stored in plaintext , so make sure to store it in your machine accordingly.
 
 see [changelog.md](CHANGELOG.md) for what changed.
 
