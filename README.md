@@ -4,24 +4,17 @@ a little trading terminal for polymarket. lives in your terminal. browse
 markets, place orders, run a paper account, copy other wallets, poke it from a
 script or an ai agent. that's it.
 
-```
-   .--------------------------------------------------.
-   |  ~ fiberglass ~                                  |
-   |                                                  |
-   |   [ rust 1.88+ ]   [ macos / linux ]   [ mit ]   |
-   |   [ paper trading: yes ]   [ live: careful!! ]   |
-   |                                                  |
-   |        keyboard-driven. local-first.             |
-   '--------------------------------------------------'
-```
+![macos](https://img.shields.io/badge/macos-000000?logo=apple&logoColor=white)
+![linux](https://img.shields.io/badge/linux-FCC624?logo=linux&logoColor=black)
+![mit](https://img.shields.io/badge/license-mit-green)
+![live](https://img.shields.io/badge/live-careful-red)
 
-## heads up
-
-still very much work in progress. do not put in money you can't lose.
-
-live mode signs and sends **real orders with real funds**, and none of it is
-battle-tested. start with `--paper`. check every transaction yourself. if you
-lose money it's on you.
+> [!CAUTION]
+> do not use real funds unless at your own risk.
+>
+> still heavily work in progress. live mode signs and sends real orders with
+> real funds, and none of it is battle-tested. start with `--paper`, check
+> every transaction yourself. if you lose money it's on you.
 
 ## install
 
