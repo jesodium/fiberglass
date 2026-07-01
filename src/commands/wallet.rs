@@ -234,6 +234,7 @@ fn cmd_show(output: OutputFormat, private_key_flag: Option<&str>) -> Result<()> 
                 println!("      address shown in the Polymarket web app. Do not send tokens");
                 println!("      directly to it — fund your account through the official deposit");
                 println!("      flow. If your web proxy differs, pin it with `wallet set-proxy`.");
+                println!("      Trading uses USDC.e (0x2791...), not native USDC (0x3c49...).");
             }
         }
     }

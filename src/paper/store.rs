@@ -87,6 +87,75 @@ pub(crate) fn is_enabled() -> Result<bool> {
     Ok(load()?.is_some_and(|a| a.enabled))
 }
 
+fn snapshots_dir() -> Result<PathBuf> {
+    let dir = account_path()?
+        .parent()
+        .map(|p| p.join("paper_snapshots"))
+        .unwrap_or_else(|| PathBuf::from("paper_snapshots"));
+    Ok(dir)
+}
+
+/// Reject names that would escape the snapshots dir or need quoting.
+fn valid_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains(['/', '\\', '.'])
+        || name.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        anyhow::bail!("Snapshot name must be a single word without '/', '.', or spaces");
+    }
+    Ok(())
+}
+
+/// Copy the current account file to `paper_snapshots/<name>.json`.
+pub(crate) fn snapshot_save(name: &str) -> Result<PathBuf> {
+    valid_name(name)?;
+    let src = account_path()?;
+    if !src.exists() {
+        anyhow::bail!("{NO_ACCOUNT_MSG}");
+    }
+    let dir = snapshots_dir()?;
+    fs::create_dir_all(&dir).context("Failed to create snapshots directory")?;
+    let dst = dir.join(format!("{name}.json"));
+    fs::copy(&src, &dst).context(format!("Failed to write {}", dst.display()))?;
+    Ok(dst)
+}
+
+/// Overwrite the account file with snapshot `<name>`.
+pub(crate) fn snapshot_restore(name: &str) -> Result<()> {
+    valid_name(name)?;
+    let src = snapshots_dir()?.join(format!("{name}.json"));
+    if !src.exists() {
+        anyhow::bail!("No snapshot named '{name}'. See `paper snapshot list`");
+    }
+    // Validate it parses before clobbering the live account.
+    let data = fs::read_to_string(&src).context(format!("Failed to read {}", src.display()))?;
+    let account: PaperAccount =
+        serde_json::from_str(&data).context(format!("Corrupt snapshot {}", src.display()))?;
+    save_force(&account) // bypass the stale-write guard: a restore is intentional
+}
+
+/// Snapshot names present on disk (without the `.json` suffix), sorted.
+pub(crate) fn snapshot_list() -> Result<Vec<String>> {
+    let dir = snapshots_dir()?;
+    let mut names: Vec<String> = match fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .filter_map(|e| {
+                e.ok()?
+                    .file_name()
+                    .to_str()?
+                    .strip_suffix(".json")
+                    .map(String::from)
+            })
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            return Err(anyhow::anyhow!(e).context(format!("Failed to read {}", dir.display())));
+        }
+    };
+    names.sort();
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

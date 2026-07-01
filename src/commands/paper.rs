@@ -99,6 +99,35 @@ pub enum PaperCommand {
 
     /// Performance analytics: win rate, best/worst trade, daily PnL
     Stats,
+
+    /// Save / restore / list named copies of the paper account
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotCommand,
+    },
+
+    /// Dump the trade log or positions as CSV to stdout (redirect to a file)
+    Export {
+        /// What to export
+        #[arg(value_enum)]
+        what: ExportKind,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SnapshotCommand {
+    /// Copy the current account to a named snapshot
+    Save { name: String },
+    /// Overwrite the current account with a named snapshot
+    Restore { name: String },
+    /// List saved snapshots
+    List,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum ExportKind {
+    Trades,
+    Positions,
 }
 
 pub async fn execute(args: PaperArgs, output: OutputFormat) -> Result<()> {
@@ -319,9 +348,100 @@ pub async fn execute(args: PaperArgs, output: OutputFormat) -> Result<()> {
             print_settled_fills(&fills, output);
             print_stats(&engine::compute_stats(&account), output)?;
         }
+
+        PaperCommand::Snapshot { command } => match command {
+            SnapshotCommand::Save { name } => {
+                let path = store::snapshot_save(&name)?;
+                match output {
+                    OutputFormat::Table => println!("Saved snapshot '{name}' → {}", path.display()),
+                    OutputFormat::Json => {
+                        crate::output::print_json(&serde_json::json!({"saved": name}))?
+                    }
+                }
+            }
+            SnapshotCommand::Restore { name } => {
+                store::snapshot_restore(&name)?;
+                match output {
+                    OutputFormat::Table => {
+                        println!("Restored snapshot '{name}'. Restart the TUI if it's open.")
+                    }
+                    OutputFormat::Json => {
+                        crate::output::print_json(&serde_json::json!({"restored": name}))?
+                    }
+                }
+            }
+            SnapshotCommand::List => {
+                let names = store::snapshot_list()?;
+                match output {
+                    OutputFormat::Table => {
+                        if names.is_empty() {
+                            println!("No snapshots. Save one with `paper snapshot save <name>`.");
+                        } else {
+                            for n in &names {
+                                println!("{n}");
+                            }
+                        }
+                    }
+                    OutputFormat::Json => {
+                        crate::output::print_json(&serde_json::json!({"snapshots": names}))?
+                    }
+                }
+            }
+        },
+
+        PaperCommand::Export { what } => {
+            let account = store::load_required()?;
+            match what {
+                ExportKind::Trades => {
+                    println!(
+                        "id,timestamp,token_id,question,outcome,side,kind,size,price,notional,realized_pnl"
+                    );
+                    for t in &account.trades {
+                        println!(
+                            "{},{},{},{},{},{},{},{},{},{},{}",
+                            t.id,
+                            t.timestamp.to_rfc3339(),
+                            t.token_id,
+                            csv_field(&t.question),
+                            csv_field(&t.outcome),
+                            t.side,
+                            t.kind,
+                            t.size,
+                            t.price,
+                            t.notional,
+                            t.realized_pnl.map(|p| p.to_string()).unwrap_or_default(),
+                        );
+                    }
+                }
+                ExportKind::Positions => {
+                    println!("token_id,question,outcome,size,avg_price,realized_pnl");
+                    for p in account.positions.values() {
+                        println!(
+                            "{},{},{},{},{},{}",
+                            p.token_id,
+                            csv_field(&p.question),
+                            csv_field(&p.outcome),
+                            p.size,
+                            p.avg_price,
+                            p.realized_pnl,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Quote a CSV field only when it needs it (comma, quote, or newline). Questions
+/// routinely contain commas, so this is not optional.
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }
 
 /// Simulated market buy with a pUSD budget. Also the entry point for
