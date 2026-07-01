@@ -35,6 +35,7 @@ SHA_ARM_LINUX=$(get_sha "aarch64-unknown-linux-gnu")
 
 echo "Writing ${FORMULA} for version ${VERSION}..."
 
+mkdir -p "$(dirname "$FORMULA")"
 cat > "$FORMULA" << RUBY
 class Fiberglass < Formula
   desc "Fiberglass — a trading terminal for Polymarket"
