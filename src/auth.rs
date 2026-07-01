@@ -29,6 +29,19 @@ fn parse_signature_type(s: &str) -> SignatureType {
     }
 }
 
+/// Resolve the configured wallet's own address (EOA from the private key).
+pub fn my_address() -> Result<Address> {
+    Ok(resolve_signer(None)?.address())
+}
+
+/// clap value parser: a `0x…` address, or `@` / `me` / `self` for the configured wallet.
+pub fn parse_address_or_me(s: &str) -> Result<Address, String> {
+    match s.trim() {
+        "@" | "me" | "self" => my_address().map_err(|e| e.to_string()),
+        other => Address::from_str(other).map_err(|e| format!("invalid address: {e}")),
+    }
+}
+
 pub fn resolve_signer(
     private_key: Option<&str>,
 ) -> Result<impl polymarket_client_sdk_v2::auth::Signer> {
@@ -106,6 +119,14 @@ pub async fn create_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_address_or_me_literal_and_garbage() {
+        let addr = "0x0000000000000000000000000000000000000001";
+        assert_eq!(parse_address_or_me(addr).unwrap().to_string(), addr);
+        assert!(parse_address_or_me("not-an-address").is_err());
+        // ponytail: `@`/`me` needs a configured wallet — covered manually, not here.
+    }
 
     #[test]
     fn parse_signature_type_proxy() {

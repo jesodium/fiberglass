@@ -41,7 +41,8 @@ pub struct ApproveArgs {
 pub enum ApproveCommand {
     /// Check current contract approvals for a wallet
     Check {
-        /// Wallet address to check (defaults to configured wallet)
+        /// Wallet address to check (defaults to configured wallet; accepts `@`/`me`)
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Option<Address>,
     },
     /// Approve all required contracts for trading (sends on-chain transactions)

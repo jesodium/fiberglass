@@ -54,7 +54,8 @@ pub enum CommentsCommand {
 
     /// List comments by a user's wallet address
     ByUser {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: polymarket_client_sdk_v2::types::Address,
 
         /// Max results

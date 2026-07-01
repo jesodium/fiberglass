@@ -16,7 +16,8 @@ pub struct ProfilesArgs {
 pub enum ProfilesCommand {
     /// Get a public profile by wallet address
     Get {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
     },
 }

@@ -1,5 +1,6 @@
 use polymarket_client_sdk_v2::bridge::types::{
     DepositResponse, DepositTransactionStatus, StatusResponse, SupportedAssetsResponse,
+    WithdrawResponse,
 };
 use serde_json::json;
 use tabled::settings::Style;
@@ -17,6 +18,34 @@ pub fn print_deposit(response: &DepositResponse, output: &OutputFormat) -> anyho
             if let Some(note) = &response.note {
                 detail_field!(rows, "Note", note.clone());
             }
+            print_detail_table(rows);
+            // Bold red (ANSI 1;31) so the caveat is impossible to miss.
+            println!(
+                "\n\x1b[1;31m⚠️  THIS MIGHT NOT WORK! Bridge deposits via CLI are unreliable — \
+                 it's safer to deposit on polymarket.com after logging in.\x1b[0m"
+            );
+        }
+        OutputFormat::Json => {
+            let data = json!({
+                "evm": format!("{}", response.address.evm),
+                "svm": response.address.svm,
+                "btc": response.address.btc,
+                "note": response.note,
+            });
+            super::print_json(&data)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn print_withdraw(response: &WithdrawResponse, output: &OutputFormat) -> anyhow::Result<()> {
+    match output {
+        OutputFormat::Table => {
+            let mut rows = Vec::new();
+            detail_field!(rows, "EVM", format!("{}", response.address.evm));
+            detail_field!(rows, "Solana", response.address.svm.clone());
+            detail_field!(rows, "Bitcoin", response.address.btc.clone());
+            detail_field!(rows, "Note", response.note.clone());
             print_detail_table(rows);
         }
         OutputFormat::Json => {

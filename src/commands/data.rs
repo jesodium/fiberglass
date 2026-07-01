@@ -27,7 +27,8 @@ pub struct DataArgs {
 pub enum DataCommand {
     /// Get open positions for a wallet address
     Positions {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
 
         /// Max results
@@ -41,13 +42,15 @@ pub enum DataCommand {
 
     /// Aggregate PnL summary across all open positions for a wallet
     Pnl {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
     },
 
     /// Get closed positions for a wallet address
     ClosedPositions {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
 
         /// Max results
@@ -61,19 +64,22 @@ pub enum DataCommand {
 
     /// Get total position value for a wallet address
     Value {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
     },
 
     /// Get count of unique markets traded by a wallet
     Traded {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
     },
 
     /// Get trade history
     Trades {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
 
         /// Max results
@@ -87,7 +93,8 @@ pub enum DataCommand {
 
     /// Get on-chain activity for a wallet address
     Activity {
-        /// Wallet address (0x...)
+        /// Wallet address (0x...), or `@`/`me` for your own wallet
+        #[arg(value_parser = crate::auth::parse_address_or_me)]
         address: Address,
 
         /// Max results
