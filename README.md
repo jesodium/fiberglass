@@ -51,7 +51,8 @@ see [changelog.md](CHANGELOG.md) for what changed.
 
 ## license
 
-im not sure yet
+GPL-3.0-or-later. See [LICENSE](LICENSE). You may use, modify, and redistribute,
+but derivatives must stay open under the same license. No warranty — see §15–17.
 
 # ai usage
 ai was used in the making of this project (claude code)

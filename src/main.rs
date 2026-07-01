@@ -22,7 +22,10 @@ use output::OutputFormat;
 #[command(
     name = "fiberglass",
     about = "Fiberglass — a trading terminal for Polymarket",
-    version
+    version,
+    after_help = "Fiberglass  Copyright (C) 2026 jesodium\n\
+                  Licensed under GPL-3.0-or-later. This program comes with ABSOLUTELY NO WARRANTY.\n\
+                  This is free software; you may redistribute it under those terms. See LICENSE."
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
