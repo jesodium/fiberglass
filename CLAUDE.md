@@ -74,3 +74,7 @@ Paper mode (`--paper` flag or TUI toggle) uses `paper/` engine with a local JSON
 ## Rules
 
 Do not create branches to add features. Use the nightly branch.
+
+When testing, use paper mode, in a sandboxed enviroment ( do not interfere with the user's own save )
+doing otherwise could cause irreversible damage to both paper traders and real traders.
+testing on live ask for keychain, so dont do it on live.
