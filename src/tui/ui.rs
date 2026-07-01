@@ -1634,6 +1634,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     let (label, color) = match &status {
+        Some(s) if s.state == "listening" => ("● Listening", GOOD),
         Some(s) if s.is_recent() => ("● Connected", GOOD),
         Some(s) if s.state == "stopped" => ("○ Stopped", DIM),
         Some(_) => ("◌ Idle", GOLD),
@@ -1646,6 +1647,10 @@ fn render_mcp_panel(f: &mut Frame, area: Rect) {
 
     match &status {
         Some(s) => {
+            lines.push(kv_line("Transport", &s.transport));
+            if let Some(endpoint) = &s.endpoint {
+                lines.push(kv_line("Endpoint", endpoint));
+            }
             let client = match (&s.client_name, &s.client_version) {
                 (Some(n), Some(v)) => format!("{n} v{v}"),
                 (Some(n), None) => n.clone(),
@@ -1661,10 +1666,10 @@ fn render_mcp_panel(f: &mut Frame, area: Rect) {
         }
         None => {
             lines.push(Line::from(
-                "No MCP session yet. Register the server with your AI client:".fg(DIM),
+                "No MCP server yet. Start the background worker:".fg(DIM),
             ));
             lines.push(Line::from(Span::styled(
-                r#"  "command": "fiberglass", "args": ["mcp"]"#,
+                r#"  "command": "fiberglass", "args": ["start"]"#,
                 Style::default().fg(ACCENT),
             )));
         }

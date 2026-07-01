@@ -1,5 +1,6 @@
 //! Model Context Protocol (MCP) server — a fourth entry point alongside the
-//! TUI, CLI, and shell.
+//! TUI, CLI, and shell. It can run directly over stdio for normal MCP clients
+//! or as a loopback daemon started by the background worker.
 //!
 //! Speaks JSON-RPC 2.0 over a stdio transport (newline-delimited messages).
 //! Each `tools/call` is dispatched by re-invoking this same binary with the
@@ -21,10 +22,11 @@ pub(crate) mod status;
 mod tools;
 
 use std::io::{BufRead, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 /// MCP protocol revision we implement against, and the default we advertise
@@ -36,83 +38,134 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 
 pub(crate) fn run() -> Result<()> {
+    run_stdio()
+}
+
+pub(crate) fn run_stdio() -> Result<()> {
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
     // Best-effort liveness record the Settings tab reads (see `status`).
-    let mut status = status::McpStatus::start();
+    let mut status = status::McpStatus::start_stdio();
 
+    serve(&mut reader, &mut out, &mut status)?;
+    status.stop();
+    Ok(())
+}
+
+/// Start the background MCP listener on loopback and keep it running until the
+/// process exits. The daemon uses the same JSON-RPC loop as the stdio server,
+/// but clients connect over TCP instead of inheriting our stdio streams.
+pub(crate) fn start_background() -> Result<String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).context("Failed to bind MCP daemon")?;
+    let endpoint = listener
+        .local_addr()
+        .context("Failed to read MCP daemon endpoint")?
+        .to_string();
+    let mut status = status::McpStatus::start_daemon(endpoint.clone());
+
+    std::thread::spawn(move || {
+        loop {
+            match listener.accept() {
+                Ok((stream, peer)) => {
+                    status.set_client(Some(&peer.to_string()), None);
+                    if let Err(e) = serve_tcp(stream, &mut status) {
+                        eprintln!("[mcp] daemon session failed: {e:#}");
+                    }
+                    status.set_listening();
+                }
+                Err(e) => {
+                    eprintln!("[mcp] daemon accept failed: {e:#}");
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
+        }
+    });
+
+    Ok(endpoint)
+}
+
+fn serve<R: BufRead, W: Write>(
+    reader: &mut R,
+    out: &mut W,
+    status: &mut status::McpStatus,
+) -> Result<()> {
     let mut line = String::new();
     loop {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
-            status.stop(); // EOF — client closed the pipe.
             break;
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-
         let msg: Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(e) => {
                 write_message(
-                    &mut out,
+                    out,
                     &error_response(Value::Null, -32700, &format!("Parse error: {e}")),
                 )?;
                 continue;
             }
         };
-
-        // Requests carry an "id"; notifications do not and expect no response.
-        let id = msg.get("id").cloned();
-        let method = msg
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        match (id, method) {
-            (Some(id), "initialize") => {
-                let params = msg.get("params");
-                let info = params.and_then(|p| p.get("clientInfo"));
-                status.set_client(
-                    info.and_then(|i| i.get("name")).and_then(Value::as_str),
-                    info.and_then(|i| i.get("version")).and_then(Value::as_str),
-                );
-                let requested = params
-                    .and_then(|p| p.get("protocolVersion"))
-                    .and_then(Value::as_str);
-                write_message(&mut out, &success(id, initialize_result(requested)))?;
-            }
-            (Some(id), "tools/list") => {
-                write_message(
-                    &mut out,
-                    &success(id, json!({"tools": tools::definitions()})),
-                )?;
-            }
-            (Some(id), "tools/call") => {
-                let params = msg.get("params");
-                if let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) {
-                    status.record_call(name);
-                }
-                let result = handle_call(params);
-                write_message(&mut out, &success(id, result))?;
-            }
-            (Some(id), "ping") => write_message(&mut out, &success(id, json!({})))?,
-            (Some(id), other) => {
-                write_message(
-                    &mut out,
-                    &error_response(id, -32601, &format!("Method not found: {other}")),
-                )?;
-            }
-            // Notifications (e.g. notifications/initialized) need no reply.
-            (None, _) => {}
-        }
+        handle_message(msg, out, status)?;
     }
+    Ok(())
+}
 
+fn serve_tcp(stream: TcpStream, status: &mut status::McpStatus) -> Result<()> {
+    let reader = std::io::BufReader::new(stream.try_clone()?);
+    let mut reader = reader;
+    let mut out = stream;
+    serve(&mut reader, &mut out, status)
+}
+
+fn handle_message(msg: Value, out: &mut impl Write, status: &mut status::McpStatus) -> Result<()> {
+    // Requests carry an "id"; notifications do not and expect no response.
+    let id = msg.get("id").cloned();
+    let method = msg
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    match (id, method) {
+        (Some(id), "initialize") => {
+            let params = msg.get("params");
+            let info = params.and_then(|p| p.get("clientInfo"));
+            status.set_client(
+                info.and_then(|i| i.get("name")).and_then(Value::as_str),
+                info.and_then(|i| i.get("version")).and_then(Value::as_str),
+            );
+            let requested = params
+                .and_then(|p| p.get("protocolVersion"))
+                .and_then(Value::as_str);
+            write_message(out, &success(id, initialize_result(requested)))?;
+        }
+        (Some(id), "tools/list") => {
+            write_message(out, &success(id, json!({"tools": tools::definitions()})))?;
+        }
+        (Some(id), "tools/call") => {
+            let params = msg.get("params");
+            if let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) {
+                status.record_call(name);
+            }
+            let result = handle_call(params);
+            write_message(out, &success(id, result))?;
+        }
+        (Some(id), "ping") => write_message(out, &success(id, json!({})))?,
+        (Some(id), other) => {
+            write_message(
+                out,
+                &error_response(id, -32601, &format!("Method not found: {other}")),
+            )?;
+        }
+        // Notifications (e.g. notifications/initialized) need no reply.
+        (None, _) => {}
+    }
     Ok(())
 }
 

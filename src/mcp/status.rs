@@ -1,9 +1,10 @@
 //! Best-effort status file for the MCP server.
 //!
-//! The server is spawned by an MCP client over stdio, so it runs in a separate
-//! process from the TUI. To let the Settings tab show whether a client is
-//! connected, the server records lifecycle events to a small JSON file
-//! (`~/.config/polymarket/mcp-status.json`); the TUI reads it on render.
+//! The MCP server can run either over stdio (client-attached) or as the
+//! background daemon's loopback listener. To let the Settings tab show whether
+//! a client is connected — and where the daemon is listening — the server
+//! records lifecycle events to a small JSON file (`~/.config/polymarket/mcp-
+//! status.json`); the TUI reads it on render.
 //!
 //! Every write here is best-effort: a failure to persist status must never
 //! interfere with the protocol stream, so persistence errors are swallowed.
@@ -22,8 +23,10 @@ const RECENT_SECS: i64 = 120;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct McpStatus {
-    /// "running" (started, no client yet) | "connected" | "stopped".
+    /// "running" (stdio, no client yet) | "connected" | "listening" | "stopped".
     pub state: String,
+    /// "stdio" or "tcp".
+    pub transport: String,
     pub pid: u32,
     pub started_at: Option<DateTime<Utc>>,
     pub last_activity: Option<DateTime<Utc>>,
@@ -32,6 +35,8 @@ pub(crate) struct McpStatus {
     pub last_tool: Option<String>,
     pub client_name: Option<String>,
     pub client_version: Option<String>,
+    /// Loopback endpoint for the background daemon.
+    pub endpoint: Option<String>,
 }
 
 pub(crate) fn path() -> Option<PathBuf> {
@@ -46,16 +51,29 @@ pub(crate) fn load() -> Option<McpStatus> {
 }
 
 impl McpStatus {
-    /// Initialise a fresh "running" record for this process and persist it.
-    pub(crate) fn start() -> Self {
+    fn fresh(state: &str, transport: &str, endpoint: Option<String>) -> Self {
         let now = Utc::now();
-        let s = Self {
-            state: "running".into(),
+        Self {
+            state: state.into(),
+            transport: transport.into(),
             pid: std::process::id(),
             started_at: Some(now),
             last_activity: Some(now),
+            endpoint,
             ..Self::default()
-        };
+        }
+    }
+
+    /// Initialise a fresh stdio record and persist it.
+    pub(crate) fn start_stdio() -> Self {
+        let s = Self::fresh("running", "stdio", None);
+        s.persist();
+        s
+    }
+
+    /// Initialise a fresh background-daemon record and persist it.
+    pub(crate) fn start_daemon(endpoint: impl Into<String>) -> Self {
+        let s = Self::fresh("listening", "tcp", Some(endpoint.into()));
         s.persist();
         s
     }
@@ -65,6 +83,15 @@ impl McpStatus {
         self.state = "connected".into();
         self.client_name = name.map(ToString::to_string);
         self.client_version = version.map(ToString::to_string);
+        self.last_activity = Some(Utc::now());
+        self.persist();
+    }
+
+    /// Return to the listening state after a TCP client disconnects.
+    pub(crate) fn set_listening(&mut self) {
+        self.state = "listening".into();
+        self.client_name = None;
+        self.client_version = None;
         self.last_activity = Some(Utc::now());
         self.persist();
     }
@@ -101,6 +128,11 @@ impl McpStatus {
             let _ = fs::write(&path, json);
         }
     }
+}
+
+pub(crate) fn clear() {
+    let Some(path) = path() else { return };
+    let _ = fs::remove_file(path);
 }
 
 #[cfg(test)]

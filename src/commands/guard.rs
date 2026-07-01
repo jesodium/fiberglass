@@ -1,10 +1,10 @@
 //! `guard` — arm TP/SL exit guards, plus the headless background worker.
 //!
 //! The worker (`guard run`) is the TUI's two background jobs with no screen: it
-//! evaluates TP/SL guards *and* polls copy-trading. `fiberglass start` (and the
-//! TUI on launch / an order placement) spawns it detached so both keep running
-//! after you close the terminal. Coordination is two small heartbeat files in
-//! the config dir:
+//! evaluates TP/SL guards *and* polls copy-trading, and it now brings up the
+//! background MCP listener too. `fiberglass start` (and the TUI on launch / an
+//! order placement) spawns it detached so those keep running after you close
+//! the terminal. Coordination is two small heartbeat files in the config dir:
 //!
 //! * `guard-worker.json` — worker liveness, read by `status` / `ensure_worker`.
 //! * `tui-heartbeat.json` — written by a running TUI; while it's fresh the
@@ -140,6 +140,7 @@ pub async fn execute(args: GuardArgs, output: OutputFormat) -> Result<()> {
         GuardCommand::Status => {
             let worker = load_worker();
             let alive = worker.as_ref().is_some_and(WorkerStatus::is_recent);
+            let mcp = crate::mcp::status::load();
             let book = guard::load().unwrap_or_default();
             if let OutputFormat::Json = output {
                 println!(
@@ -147,6 +148,7 @@ pub async fn execute(args: GuardArgs, output: OutputFormat) -> Result<()> {
                     serde_json::json!({
                         "alive": alive,
                         "worker": worker,
+                        "mcp": mcp,
                         "guards": book.guards.len(),
                         "autostart": autostart_enabled(),
                     })
@@ -168,6 +170,16 @@ pub async fn execute(args: GuardArgs, output: OutputFormat) -> Result<()> {
                 book.guards.len(),
                 if autostart_enabled() { "on" } else { "off" }
             );
+            match mcp {
+                Some(s) if s.state == "listening" => {
+                    println!("MCP listening on {}.", s.endpoint.unwrap_or_default());
+                }
+                Some(s) if s.is_recent() => {
+                    println!("MCP session active ({}, {}).", s.transport, s.state);
+                }
+                Some(_) => println!("MCP not active."),
+                None => println!("MCP not running."),
+            }
             println!("Log: {}", config::config_dir()?.join(LOG_FILE).display());
             Ok(())
         }
@@ -320,8 +332,8 @@ pub fn start_daemon() -> Result<()> {
     }
     spawn_worker()?;
     println!(
-        "Started headless: TP/SL guards + copy-trading (each item runs in its own paper/live \
-         mode). Survives closing this terminal.\n`guard status` to check, `stop` to halt."
+        "Started headless: TP/SL guards + copy-trading + MCP (each item runs in its own \
+         paper/live mode). Survives closing this terminal.\n`guard status` to check, `stop` to halt."
     );
     Ok(())
 }
@@ -376,6 +388,7 @@ pub(crate) fn stop_worker() -> Result<()> {
     if let Some(p) = worker_path() {
         let _ = fs::remove_file(p);
     }
+    crate::mcp::status::clear();
     let armed = guard::load().unwrap_or_default().guards.len();
     if armed > 0 {
         println!("Note: {armed} guard(s) still armed — they will NOT fire while stopped.");
@@ -405,6 +418,23 @@ async fn run_worker(interval: u64) -> Result<()> {
     };
     persist_worker(&status);
 
+    let mcp_endpoint = match crate::mcp::start_background() {
+        Ok(endpoint) => {
+            eprintln!(
+                "[{}] MCP daemon listening on {endpoint}",
+                Utc::now().format("%H:%M:%S")
+            );
+            Some(endpoint)
+        }
+        Err(e) => {
+            eprintln!(
+                "[{}] MCP daemon failed to start: {e:#}",
+                Utc::now().format("%H:%M:%S")
+            );
+            None
+        }
+    };
+
     // Copy-trading half: only spin it up if the roster actually has followers.
     // Each follower mirrors onto paper or live per its own flag — no mode here.
     let copy_secs = crate::settings::load().copy_poll_secs.max(1);
@@ -418,13 +448,16 @@ async fn run_worker(interval: u64) -> Result<()> {
     let mut last_copy = Utc::now() - chrono::Duration::seconds(copy_secs as i64);
 
     println!(
-        "[{}] worker up (pid {}, every {interval}s, copy-trading {})",
+        "[{}] worker up (pid {}, every {interval}s, copy-trading {}, mcp {})",
         Utc::now().format("%Y-%m-%d %H:%M:%S"),
         status.pid,
         copy.as_ref().map_or("off".into(), |c| format!(
             "{} follower(s)",
             c.running_count()
         )),
+        mcp_endpoint
+            .as_deref()
+            .map_or_else(|| "off".to_string(), |e| e.to_string()),
     );
 
     let clob = auth::unauthenticated_clob_client()?;

@@ -94,7 +94,7 @@ enum Commands {
     Wallet(commands::wallet::WalletArgs),
     /// Check API health status
     Status,
-    /// Run all background trading headless — TP/SL guards + copy-trading.
+    /// Run all background trading headless — TP/SL guards + copy-trading + MCP.
     ///
     /// Detaches and keeps running after you close the terminal, exactly like
     /// the TUI's background workers but with no screen. `stop` to halt,
