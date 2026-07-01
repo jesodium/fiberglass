@@ -128,6 +128,7 @@ fn detect_target() -> anyhow::Result<&'static str> {
         ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
         ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
         _ => bail!("Unsupported platform: {os}/{arch}"),
     }
 }
@@ -212,7 +213,9 @@ mod tests {
     fn detect_target_returns_valid_triple() {
         let target = detect_target().unwrap();
         assert!(
-            target.contains("apple-darwin") || target.contains("unknown-linux"),
+            target.contains("apple-darwin")
+                || target.contains("unknown-linux")
+                || target.contains("windows"),
             "unexpected target: {target}"
         );
     }

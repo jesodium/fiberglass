@@ -7,6 +7,15 @@ tags. The section matching a release tag is published as that release's notes
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-06-30
+
+### Added
+- Windows builds. Release artifacts now include `x86_64-pc-windows-msvc`
+  (`fiberglass-<tag>-x86_64-pc-windows-msvc.tar.gz`) alongside macOS and Linux,
+  and CI runs the test suite on Windows as well. The self-updater (`upgrade`)
+  remains macOS/Linux-only; update on Windows by downloading the release
+  archive.
+
 ## [0.1.13] - 2026-06-30
 
 ### Changed
