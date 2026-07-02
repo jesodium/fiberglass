@@ -18,7 +18,7 @@ Source cargo env if binary not found: `source ~/.cargo/env`
 
 ## Architecture
 
-**polymarket-cli** is a Rust trading terminal for Polymarket. Four entry points share the same core (all dispatched from `main.rs`):
+**fiberglass* is a Rust trading terminal for Polymarket. Four entry points share the same core (all dispatched from `main.rs`):
 
 1. **TUI** (`tui/`) — primary interface; 9 tabs, async render loop, background refresh
 2. **CLI** (`commands/`) — 20+ subcommands
