@@ -1,6 +1,6 @@
 # fiberglass
 
-a rewritten fork of the polymarket cli built for AI agent support and backtesting with paper trading.
+a rewritten fork of the polymarket cli built for AI agent support and backtesting with paper trading. supported on all macs, windows, and linux
 
 [![macos ci](https://github.com/jesodium/fiberglass/actions/workflows/ci-macos.yml/badge.svg?branch=main)](https://github.com/jesodium/fiberglass/actions/workflows/ci-macos.yml?query=branch%3Amain)
 
