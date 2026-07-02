@@ -2,9 +2,13 @@
 
 a rewritten fork of the polymarket cli built for AI agent support and backtesting with paper trading.
 
-[![macos ci](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28macos-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
-[![linux ci](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28ubuntu-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
-[![windows ci](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28windows-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
+[![macos ci](https://github.com/jesodium/fiberglass/actions/workflows/ci-macos.yml/badge.svg?branch=main)](https://github.com/jesodium/fiberglass/actions/workflows/ci-macos.yml?query=branch%3Amain)
+
+[![linux ci](https://github.com/jesodium/fiberglass/actions/workflows/ci-linux.yml/badge.svg?branch=main)](https://github.com/jesodium/fiberglass/actions/workflows/ci-linux.yml?query=branch%3Amain)
+
+![windows ci](https://img.shields.io/badge/windows%20ci-disabled-red)
+
+> **windows support:** CI and release builds for windows are temporarily disabled — the windows-latest GitHub Actions runner hangs indefinitely partway through the test suite (not a crash, not just slow; still unresolved). This is a CI-environment issue, not a known problem with the app itself — `cargo install --path .` should still work if you're building from source on windows. No windows binary is published for this release.
 
 ## Use your own money at your own risk!
 The live mode has not been tested yet; if you lose your money, it's your problem.
