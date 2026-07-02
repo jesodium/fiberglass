@@ -2,9 +2,9 @@
 
 a rewritten fork of the polymarket cli built for AI agent support and backtesting with paper trading.
 
-[![macos](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28macos-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
-[![linux](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28ubuntu-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
-[![windows](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28windows-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
+[![macos ci](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28macos-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
+[![linux ci](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28ubuntu-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
+[![windows ci](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml/badge.svg?branch=main&job=check%20%28windows-latest%29)](https://github.com/jesodium/fiberglass/actions/workflows/ci.yml?query=branch%3Amain)
 
 ## Use your own money at your own risk!
 The live mode has not been tested yet; if you lose your money, it's your problem.
