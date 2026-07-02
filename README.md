@@ -48,6 +48,13 @@ to keep it off disk entirely.
 
 see [changelog.md](CHANGELOG.md) for what changed.
 
+## images
+<img width="1453" height="724" alt="image" src="https://github.com/user-attachments/assets/c7e388cb-e926-4b63-8198-407f69061744" />
+<img width="1408" height="707" alt="image" src="https://github.com/user-attachments/assets/b5081e52-5d13-4ad9-8733-d6c9299a1c62" />
+<img width="1445" height="734" alt="image" src="https://github.com/user-attachments/assets/4095aa25-ed02-489c-a99b-28e3388e6ca9" />
+
+
+
 ## stars
 
 [![star history](https://api.star-history.com/svg?repos=jesodium/fiberglass&type=Date)](https://star-history.com/#jesodium/fiberglass&Date)
