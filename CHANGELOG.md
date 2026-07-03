@@ -10,6 +10,27 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+## [0.1.19] - 2026-07-03
+
+### added
+- `mcp --print-config`: prints a ready-to-paste `mcpServers` stdio entry, so
+  registering the server with a client needs no guessing — and no port.
+
+### fixed
+- the background daemon's mcp handshake reported `serverInfo.name` as
+  `"fiberglass"`, identical to the real per-session stdio server. a client
+  probing the daemon's loopback port couldn't tell it apart from the real
+  thing and could get wired up to the wrong endpoint. now reports
+  `"fiberglass-daemon"`.
+- the tui's settings mcp panel told you to register a client with
+  `{"command": "fiberglass", "args": ["start"]}` — `start` detaches and closes
+  stdin, so it can never speak stdio json-rpc to a client. replaced with the
+  `mcp --print-config` hint above.
+- tui paper mode never re-read the account file after startup, so trades
+  placed by another writer (mcp tool calls, the headless worker, plain cli
+  usage) while the tui was open didn't show up until restart. the background
+  refresher now reloads from disk when another writer has moved ahead.
+
 ## [0.1.18] - 2026-07-02
 
 ### fixed
