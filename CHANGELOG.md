@@ -10,6 +10,17 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+## [0.1.18] - 2026-07-02
+
+### fixed
+- live orders on markets with a `0.0025` tick size (e.g. sports "team to
+  advance" and daily "will x win on <date>" markets) failed with `unknown tick
+  size: 0.0025`. the clob serves this tick, but the sdk's `TickSize` enum only
+  accepted `0.1/0.01/0.001/0.0001` and rejected it at deserialize — deep inside
+  the order builder, with no way to intercept. bumped
+  `polymarket_client_sdk_v2` `0.5.1` -> `0.6.0`, which adds the `0.0025`
+  (quarter-cent) and `0.005` (half-cent) ticks.
+
 ## [0.1.17] - 2026-07-01
 
 ### changed

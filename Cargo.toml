@@ -1,6 +1,6 @@
 [package]
 name = "fiberglass"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 rust-version = "1.88.0"
 description = "Fiberglass — a trading terminal for Polymarket: browse markets, trade, and manage positions"
@@ -14,7 +14,7 @@ name = "fiberglass"
 path = "src/main.rs"
 
 [dependencies]
-polymarket_client_sdk_v2 = { version = "0.5.1", features = ["gamma", "data", "bridge", "clob", "ctf"] }
+polymarket_client_sdk_v2 = { version = "0.6.0", features = ["gamma", "data", "bridge", "clob", "ctf"] }
 alloy = { version = "1.6.3", default-features = false, features = ["providers", "rpc-types", "sol-types", "contract", "reqwest", "reqwest-rustls-tls", "signer-local", "signers"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
