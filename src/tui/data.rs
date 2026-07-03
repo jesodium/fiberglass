@@ -219,6 +219,20 @@ pub(crate) async fn refresher(
                 d.resolutions.extend(resolved);
             }
 
+            // Pick up trades made by other writers (CLI, MCP tool calls, the
+            // headless worker) since our own in-memory copy never sees them
+            // otherwise. next_id only grows, so a strictly larger value on
+            // disk means we're behind — reload wholesale. If we're equal or
+            // ahead, disk is either us or stale, so leave memory alone.
+            if live_user.is_none()
+                && let Ok(Some(disk)) = crate::paper::store::load()
+            {
+                let mut a = account.lock().unwrap();
+                if disk.next_id > a.next_id {
+                    *a = disk;
+                }
+            }
+
             // Snapshot mark-to-market equity (paper only), throttled to ~5 min,
             // so the dashboard can derive Sharpe / max drawdown over time.
             if live_user.is_none() {

@@ -57,7 +57,12 @@ enum Commands {
     /// Launch the line-based interactive shell
     Shell,
     /// Run as an MCP server over stdio (for AI agents / LLM tooling)
-    Mcp,
+    Mcp {
+        /// Print ready-to-paste client config (mcpServers JSON) and exit —
+        /// no port, no bridge script, just the stdio command.
+        #[arg(long)]
+        print_config: bool,
+    },
     /// Copy-trading: follow wallets and mirror their trades
     Copytrade(commands::copytrade::CopyTradeArgs),
     /// Add/remove take-profit rules on a token
@@ -152,7 +157,7 @@ async fn run_main() -> ExitCode {
     let output = cli.output;
     let is_tui = matches!(
         cli.command,
-        Commands::Tui { .. } | Commands::Shell | Commands::Mcp
+        Commands::Tui { .. } | Commands::Shell | Commands::Mcp { .. }
     );
     // Skip the update check for `upgrade` (it does its own) and for
     // `completion` (its stdout must stay a clean, sourceable script).
@@ -187,7 +192,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Tui { paper } => Box::pin(tui::run(paper)).await,
         Commands::Shell => Box::pin(shell::run_shell()).await,
-        Commands::Mcp => mcp::run(),
+        Commands::Mcp { print_config } => mcp::run(print_config),
         Commands::Copytrade(args) => commands::copytrade::execute(args, cli.output).await,
         Commands::Tp(args) => commands::risk::execute_tp(args, cli.output).await,
         Commands::Sl(args) => commands::risk::execute_sl(args, cli.output).await,

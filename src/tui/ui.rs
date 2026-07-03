@@ -1666,12 +1666,21 @@ fn render_mcp_panel(f: &mut Frame, area: Rect) {
         }
         None => {
             lines.push(Line::from(
-                "No MCP server yet. Start the background worker:".fg(DIM),
+                "No MCP client connected yet. Quick setup:".fg(DIM),
             ));
             lines.push(Line::from(Span::styled(
-                r#"  "command": "fiberglass", "args": ["start"]"#,
+                "  fiberglass mcp --print-config",
                 Style::default().fg(ACCENT),
             )));
+            lines.push(Line::from(
+                "  → paste into the client's mcpServers config".fg(DIM),
+            ));
+            lines.push(Line::from(
+                "(Advanced: `start` also serves MCP, but as a".fg(DIM),
+            ));
+            lines.push(Line::from(
+                " persistent TCP daemon, different endpoint)".fg(DIM),
+            ));
         }
     }
 

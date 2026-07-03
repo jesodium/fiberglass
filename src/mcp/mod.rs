@@ -37,8 +37,32 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// when it appears here; otherwise we fall back to [`PROTOCOL_VERSION`].
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 
-pub(crate) fn run() -> Result<()> {
+pub(crate) fn run(print_config: bool) -> Result<()> {
+    if print_config {
+        return print_client_config();
+    }
     run_stdio()
+}
+
+/// Print a ready-to-paste `mcpServers` entry for this binary — stdio only,
+/// no port. Exists so a user never has to guess (or copy the daemon's
+/// loopback port, which is a different, always-on endpoint — see
+/// `start_background`) at how to register this server with a client.
+fn print_client_config() -> Result<()> {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| "fiberglass".to_string());
+    let config = json!({
+        "mcpServers": {
+            "fiberglass": {
+                "command": exe,
+                "args": ["mcp"]
+            }
+        }
+    });
+    println!("{}", serde_json::to_string_pretty(&config)?);
+    Ok(())
 }
 
 pub(crate) fn run_stdio() -> Result<()> {
@@ -50,7 +74,7 @@ pub(crate) fn run_stdio() -> Result<()> {
     // Best-effort liveness record the Settings tab reads (see `status`).
     let mut status = status::McpStatus::start_stdio();
 
-    serve(&mut reader, &mut out, &mut status)?;
+    serve(&mut reader, &mut out, &mut status, "fiberglass")?;
     status.stop();
     Ok(())
 }
@@ -91,6 +115,7 @@ fn serve<R: BufRead, W: Write>(
     reader: &mut R,
     out: &mut W,
     status: &mut status::McpStatus,
+    server_name: &str,
 ) -> Result<()> {
     let mut line = String::new();
     loop {
@@ -112,7 +137,7 @@ fn serve<R: BufRead, W: Write>(
                 continue;
             }
         };
-        handle_message(msg, out, status)?;
+        handle_message(msg, out, status, server_name)?;
     }
     Ok(())
 }
@@ -121,10 +146,18 @@ fn serve_tcp(stream: TcpStream, status: &mut status::McpStatus) -> Result<()> {
     let reader = std::io::BufReader::new(stream.try_clone()?);
     let mut reader = reader;
     let mut out = stream;
-    serve(&mut reader, &mut out, status)
+    // Distinct serverInfo.name so a client that inspects the handshake before
+    // wiring up an endpoint can tell this apart from the stdio server — this
+    // is the always-on background daemon, not a per-session MCP process.
+    serve(&mut reader, &mut out, status, "fiberglass-daemon")
 }
 
-fn handle_message(msg: Value, out: &mut impl Write, status: &mut status::McpStatus) -> Result<()> {
+fn handle_message(
+    msg: Value,
+    out: &mut impl Write,
+    status: &mut status::McpStatus,
+    server_name: &str,
+) -> Result<()> {
     // Requests carry an "id"; notifications do not and expect no response.
     let id = msg.get("id").cloned();
     let method = msg
@@ -143,7 +176,7 @@ fn handle_message(msg: Value, out: &mut impl Write, status: &mut status::McpStat
             let requested = params
                 .and_then(|p| p.get("protocolVersion"))
                 .and_then(Value::as_str);
-            write_message(out, &success(id, initialize_result(requested)))?;
+            write_message(out, &success(id, initialize_result(requested, server_name)))?;
         }
         (Some(id), "tools/list") => {
             write_message(out, &success(id, json!({"tools": tools::definitions()})))?;
@@ -307,12 +340,12 @@ fn write_message(out: &mut impl Write, msg: &Value) -> Result<()> {
     Ok(())
 }
 
-fn initialize_result(requested: Option<&str>) -> Value {
+fn initialize_result(requested: Option<&str>, server_name: &str) -> Value {
     json!({
         "protocolVersion": negotiate_version(requested),
         "capabilities": {"tools": {}},
         "serverInfo": {
-            "name": "fiberglass",
+            "name": server_name,
             "version": env!("CARGO_PKG_VERSION"),
         },
     })
