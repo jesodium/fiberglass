@@ -226,4 +226,6 @@ pub(crate) struct Stats {
     pub daily_pnl: Vec<(NaiveDate, Decimal)>,
     /// Initial balance + cumulative realized PnL per UTC day, ascending.
     pub equity_curve: Vec<(NaiveDate, Decimal)>,
+    /// Peak-to-trough drawdown over the equity curve, as a percent (0..100).
+    pub max_drawdown_pct: Option<Decimal>,
 }

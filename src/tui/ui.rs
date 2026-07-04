@@ -66,6 +66,18 @@ fn dec_half() -> Decimal {
     Decimal::new(5, 1)
 }
 
+/// Inline probability bar (`████░░ 68%`) for a price `p` in [0,1], `w` cells
+/// wide. Green when it's the favorite (>=50%), gold otherwise.
+fn prob_bar(p: Decimal, w: usize) -> Line<'static> {
+    let fill = prob_count(p, w);
+    let color = if p >= dec_half() { GOOD } else { GOLD };
+    Line::from(vec![
+        Span::styled("█".repeat(fill), Style::default().fg(color)),
+        Span::styled("░".repeat(w - fill), Style::default().fg(PANEL)),
+        Span::styled(format!(" {:>4}", pct(p)), Style::default().fg(color)),
+    ])
+}
+
 /// A slow pulse in [0,1] for breathing/glow effects, period ~2.4s at 11fps.
 fn pulse(frame: u64) -> f32 {
     let t = (frame % 27) as f32 / 27.0;
@@ -235,20 +247,28 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.view {
         View::Markets => "↑↓/jk move · Enter open · / search · Tab views · q quit",
         View::MarketDetail => "←→ outcome · t timeframe · ↑↓ scroll · b buy · s sell · Esc back",
-        View::Positions => "↑↓ move · b buy · s sell · r redeem resolved · Tab views",
-        View::Orders => "↑↓ move · c cancel · Tab views",
+        View::Positions => "↑↓ move · b buy · s sell · r redeem · / filter · o sort · O reverse",
+        View::Orders => "↑↓ move · c cancel · / filter · o sort · O reverse · Tab views",
+        View::Portfolio => "↑↓ move · / filter · o sort col · O reverse · Tab views",
+        View::History => "↑↓ scroll · / filter · Esc clear · Tab views",
         View::Copytrade => {
             "n follow · s start · x stop · e enable · d disable · D unfollow · ↑↓ move"
         }
         View::Settings => {
-            "↑↓ move · Enter edit/cycle · w reveal key · n create · m import · o browser · a approve · c check · d deposit · r reset paper · Tab views"
+            "↑↓ move · Enter edit/cycle · w reveal key · m import · o browser · a approve · c check · d deposit · Shift+L reset paper · Tab views"
         }
         _ => "Tab/1-9 switch views · ↑↓ move · ? help · q or Ctrl+C quit",
     };
     let mc = mode_color(app);
+    // While typing a table filter, echo it live in the status line.
+    let status_line = if app.table_filtering {
+        format!("Filter: {}_", app.table_filter)
+    } else {
+        app.status.clone()
+    };
     let lines = vec![
         Line::from(Span::styled(
-            app.status.clone(),
+            status_line,
             Style::default().fg(Color::White).bold(),
         )),
         Line::from(Span::styled(help, Style::default().fg(DIM))),
@@ -376,10 +396,13 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
     ];
     // Only shown once equity snapshots have accumulated (hidden for accounts
     // predating equity snapshotting).
-    if let Some(eq) = equity_stats
-        && let Some(sh) = eq.sharpe
-    {
-        info.push(kv_line("Sharpe", &sh.to_string()));
+    if let Some(eq) = &equity_stats {
+        if let Some(sh) = eq.sharpe {
+            info.push(kv_line("Sharpe", &sh.to_string()));
+        }
+        if let Some(dd) = eq.max_drawdown {
+            info.push(kv_line("Max Drawdown", &format!("{dd}%")));
+        }
     }
     let p = Paragraph::new(info)
         .block(panel("Account"))
@@ -421,14 +444,13 @@ fn markets(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let yes = m
-                .prices
-                .first()
-                .map(|p| pct(*p))
-                .unwrap_or_else(|| "—".into());
+            let yes = match m.prices.first() {
+                Some(&p) => Cell::from(prob_bar(p, 10)),
+                None => Cell::from("—").style(Style::default().fg(DIM)),
+            };
             Row::new(vec![
                 Cell::from(truncate(&m.question, 52)),
-                Cell::from(yes).style(Style::default().fg(GOOD)),
+                yes,
                 Cell::from(short_money(m.volume)),
                 Cell::from(short_money(m.liquidity)),
                 Cell::from(status_label(m.closed, m.active)),
@@ -467,7 +489,7 @@ fn markets(f: &mut Frame, app: &App, area: Rect) {
         rows,
         [
             Constraint::Min(30),
-            Constraint::Length(7),
+            Constraint::Length(16),
             Constraint::Length(11),
             Constraint::Length(11),
             Constraint::Length(8),
@@ -475,7 +497,7 @@ fn markets(f: &mut Frame, app: &App, area: Rect) {
     )
     .header(header_row(&[
         "Market",
-        "Yes %",
+        "Yes",
         "Volume",
         "Liquidity",
         "Status",
@@ -816,8 +838,21 @@ fn portfolio(f: &mut Frame, app: &App, area: Rect) {
         layout[0],
     );
 
-    let rows: Vec<Row> = view
+    // Apply the local filter + column sort. Holdings is read-only, so this is
+    // display-only and safe — no selection/action mapping depends on it.
+    let filter = app.table_filter.to_lowercase();
+    let mut items: Vec<&PositionView> = view
         .positions
+        .iter()
+        .filter(|p| {
+            filter.is_empty()
+                || p.position.question.to_lowercase().contains(&filter)
+                || p.position.outcome.to_lowercase().contains(&filter)
+        })
+        .collect();
+    sort_holdings(&mut items, app.sort_col, app.sort_asc);
+
+    let rows: Vec<Row> = items
         .iter()
         .enumerate()
         .map(|(i, p)| {
@@ -829,10 +864,11 @@ fn portfolio(f: &mut Frame, app: &App, area: Rect) {
             let (mark_cell, value_cell, upnl_cell) = match p.mark_price {
                 Some(mark) => {
                     let upnl = p.unrealized_pnl.unwrap_or_default();
+                    let heat = pnl_heat(upnl, p.roi().unwrap_or_default());
                     (
                         Cell::from(format!("{mark:.3}")),
                         Cell::from(p.market_value.map(money).unwrap_or_else(|| ph.clone())),
-                        Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+                        Cell::from(signed_money(upnl)).style(Style::default().fg(heat)),
                     )
                 }
                 None => {
@@ -868,32 +904,101 @@ fn portfolio(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(10),
         ],
     )
-    .header(header_row(&[
-        "Market", "Outcome", "Shares", "Avg", "Mark", "Value", "uPnL",
-    ]))
-    .block(panel("Holdings"));
+    .header(sortable_header(
+        &[
+            "Market", "Outcome", "Shares", "Avg", "Mark", "Value", "uPnL",
+        ],
+        app.sort_col,
+        app.sort_asc,
+    ))
+    .block(panel(&holdings_title(&app.table_filter)));
     f.render_widget(table, layout[1]);
+}
+
+/// Panel title with a count, key hint, and the active filter when set.
+fn table_title(name: &str, count: usize, hint: &str, filter: &str) -> String {
+    if filter.is_empty() {
+        format!("{name} ({count}) — {hint}")
+    } else {
+        format!("{name} ({count}) — filter: {filter}")
+    }
+}
+
+/// Panel title for Holdings, showing the active filter when set.
+fn holdings_title(filter: &str) -> String {
+    if filter.is_empty() {
+        "Holdings — / filter · o sort · O reverse".to_string()
+    } else {
+        format!("Holdings — filter: {filter}")
+    }
+}
+
+/// A header row with a ▲/▼ marker on the active sort column.
+fn sortable_header(cells: &[&str], sort_col: usize, asc: bool) -> Row<'static> {
+    let marker = if asc { " ▲" } else { " ▼" };
+    let labeled: Vec<String> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            if i == sort_col {
+                format!("{h}{marker}")
+            } else {
+                (*h).to_string()
+            }
+        })
+        .collect();
+    let refs: Vec<&str> = labeled.iter().map(String::as_str).collect();
+    header_row(&refs)
+}
+
+/// Sort a slice of holdings by the given column index and direction. Column
+/// order matches the Holdings header: Market/Outcome/Shares/Avg/Mark/Value/uPnL.
+fn sort_holdings(list: &mut [&PositionView], col: usize, asc: bool) {
+    list.sort_by(|a, b| {
+        let ord = match col {
+            0 => a
+                .position
+                .question
+                .to_lowercase()
+                .cmp(&b.position.question.to_lowercase()),
+            1 => a
+                .position
+                .outcome
+                .to_lowercase()
+                .cmp(&b.position.outcome.to_lowercase()),
+            2 => a.position.size.cmp(&b.position.size),
+            3 => a.position.avg_price.cmp(&b.position.avg_price),
+            4 => cmp_opt(a.mark_price, b.mark_price),
+            5 => cmp_opt(a.market_value, b.market_value),
+            6 => cmp_opt(a.unrealized_pnl, b.unrealized_pnl),
+            _ => std::cmp::Ordering::Equal,
+        };
+        if asc { ord } else { ord.reverse() }
+    });
+}
+
+/// Compare two `Option`s, ordering `None` as smallest.
+fn cmp_opt<T: Ord>(a: Option<T>, b: Option<T>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 // --- Positions -------------------------------------------------------------
 
 fn positions(f: &mut Frame, app: &App, area: Rect) {
-    let marks = marks_snapshot(app);
     let loading = data_loading(app);
     let resolutions = app.data.lock().unwrap().resolutions.clone();
-    let acct = app.account.lock().unwrap();
-    let view = engine::portfolio_view(&acct, &marks);
-    drop(acct);
 
-    // Open positions render first; resolved ones drop into a -REDEEMABLE-
-    // section at the bottom. The cursor (App::selected_position) walks this
-    // same order, so keep the two in lockstep.
-    let (open, resolved): (Vec<&PositionView>, Vec<&PositionView>) = view
-        .positions
-        .iter()
-        .partition(|p| !resolutions.contains_key(&p.position.token_id));
+    // Single source of truth for order: App::ordered_positions applies the same
+    // filter + sort the cursor/selection walk, so a highlighted row always
+    // resolves to the same position the b/s/r actions act on.
+    let (open, resolved) = app.ordered_positions();
 
-    let mut rows: Vec<Row> = Vec::with_capacity(view.positions.len() + 1);
+    let mut rows: Vec<Row> = Vec::with_capacity(open.len() + resolved.len() + 1);
     let mut zi = 0usize; // zebra index, continuous across the real rows
     for p in &open {
         rows.push(open_position_row(p, zi, loading));
@@ -902,13 +1007,17 @@ fn positions(f: &mut Frame, app: &App, area: Rect) {
     if !resolved.is_empty() {
         rows.push(redeemable_header_row());
         for p in &resolved {
-            let info = &resolutions[&p.position.token_id];
-            rows.push(redeemable_row(p, info, zi));
+            // `.get`: the resolution set may shift between snapshots; fall back
+            // to a live row rather than panicking on a missing key.
+            match resolutions.get(&p.position.token_id) {
+                Some(info) => rows.push(redeemable_row(p, info, zi)),
+                None => rows.push(open_position_row(p, zi, loading)),
+            }
             zi += 1;
         }
     }
 
-    let n = view.positions.len();
+    let n = open.len() + resolved.len();
     let table = Table::new(
         rows,
         [
@@ -921,17 +1030,24 @@ fn positions(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(7),
         ],
     )
-    .header(header_row(&[
-        "Market",
-        "Out",
-        "Shares (value)",
-        "Avg (prob)",
-        "Mark (prob)",
-        "uPnL",
-        "ROI",
-    ]))
-    .block(panel(&format!(
-        "Positions ({n}) — b buy · s sell · r redeem"
+    .header(sortable_header(
+        &[
+            "Market",
+            "Out",
+            "Shares (value)",
+            "Avg (prob)",
+            "Mark (prob)",
+            "uPnL",
+            "ROI",
+        ],
+        app.sort_col,
+        app.sort_asc,
+    ))
+    .block(panel(&table_title(
+        "Positions",
+        n,
+        "b buy · s sell · r redeem · / filter · o sort",
+        &app.table_filter,
     )))
     .row_highlight_style(highlight())
     .highlight_symbol("▶ ");
@@ -964,14 +1080,16 @@ fn open_position_row(p: &PositionView, zi: usize, loading: bool) -> Row<'static>
     let (mark_cell, upnl_cell, roi_cell) = match p.mark_price {
         Some(mark) => {
             let upnl = p.unrealized_pnl.unwrap_or_default();
+            let roi = p.roi().unwrap_or_default();
+            let heat = pnl_heat(upnl, roi);
             let roi_cell = match p.roi() {
                 Some(r) => Cell::from(format!("{:+.1}%", r * Decimal::ONE_HUNDRED))
-                    .style(Style::default().fg(pnl_color(r))),
+                    .style(Style::default().fg(pnl_heat(r, roi))),
                 None => Cell::from("—"),
             };
             (
                 Cell::from(price_pct(mark)),
-                Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+                Cell::from(signed_money(upnl)).style(Style::default().fg(heat)),
                 roi_cell,
             )
         }
@@ -1051,9 +1169,7 @@ fn orders(f: &mut Frame, app: &App, area: Rect) {
         live_orders(f, app, area);
         return;
     }
-    let acct = app.account.lock().unwrap();
-    let open = acct.open_orders.clone();
-    drop(acct);
+    let open = app.ordered_paper_orders();
     let rows: Vec<Row> = open
         .iter()
         .enumerate()
@@ -1082,12 +1198,18 @@ fn orders(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(12),
         ],
     )
-    .header(header_row(&[
-        "ID", "Side", "Market", "Outcome", "Price", "Size", "Created",
-    ]))
-    .block(panel(&format!(
-        "Open Orders ({}) — c to cancel",
-        open.len()
+    .header(sortable_header(
+        &[
+            "ID", "Side", "Market", "Outcome", "Price", "Size", "Created",
+        ],
+        app.sort_col,
+        app.sort_asc,
+    ))
+    .block(panel(&table_title(
+        "Open Orders",
+        open.len(),
+        "c cancel · / filter · o sort",
+        &app.table_filter,
     )))
     .row_highlight_style(highlight())
     .highlight_symbol("▶ ");
@@ -1096,7 +1218,7 @@ fn orders(f: &mut Frame, app: &App, area: Rect) {
 
 /// Live open orders at the CLOB, refreshed on the slow cadence.
 fn live_orders(f: &mut Frame, app: &App, area: Rect) {
-    let orders = app.data.lock().unwrap().live_orders.clone();
+    let orders = app.ordered_live_orders();
     if orders.is_empty() {
         f.render_widget(
             Paragraph::new(vec![
@@ -1144,12 +1266,18 @@ fn live_orders(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(12),
         ],
     )
-    .header(header_row(&[
-        "ID", "Side", "Outcome", "Price", "Size", "Matched", "Created",
-    ]))
-    .block(panel(&format!(
-        "Open Orders · LIVE ({}) — c to cancel",
-        orders.len()
+    .header(sortable_header(
+        &[
+            "ID", "Side", "Outcome", "Price", "Size", "Matched", "Created",
+        ],
+        app.sort_col,
+        app.sort_asc,
+    ))
+    .block(panel(&table_title(
+        "Open Orders · LIVE",
+        orders.len(),
+        "c cancel · / filter · o sort",
+        &app.table_filter,
     )))
     .row_highlight_style(highlight())
     .highlight_symbol("▶ ");
@@ -1187,6 +1315,21 @@ fn history(f: &mut Frame, app: &App, area: Rect) {
             .cloned()
             .collect();
         (orders, closed)
+    };
+
+    // Local substring filter over both sub-tables (read-only, scroll-based).
+    let filter = app.table_filter.to_lowercase();
+    let (orders, closed): (Vec<Trade>, Vec<Trade>) = if filter.is_empty() {
+        (orders, closed)
+    } else {
+        let keep = |t: &Trade| {
+            t.question.to_lowercase().contains(&filter)
+                || t.outcome.to_lowercase().contains(&filter)
+        };
+        (
+            orders.into_iter().filter(&keep).collect(),
+            closed.into_iter().filter(keep).collect(),
+        )
     };
 
     // Stack the order log on top of the closed-position history.
@@ -1773,7 +1916,7 @@ fn render_trading_settings(f: &mut Frame, app: &App, area: Rect) {
     let destructive = if app.live {
         "SHIFT+L — Log out wallet / remove local key [DESTRUCTIVE]"
     } else {
-        "SHIFT+L — Reset paper account (same as r) [DESTRUCTIVE]"
+        "SHIFT+L — Reset paper account [DESTRUCTIVE]"
     };
     key_lines.push(Line::from(Span::styled(
         destructive,
@@ -1863,7 +2006,7 @@ fn render_wallet_panel(f: &mut Frame, app: &App, area: Rect) {
             lines.push(kv_line("Cash", &money(cash)));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "Press r to reset the paper account.",
+                "Press SHIFT+L to reset the paper account.",
                 Style::default().fg(GOLD),
             )));
             if app.live {
@@ -2386,21 +2529,27 @@ fn render_copy_modal(f: &mut Frame, m: &CopyModal) {
 }
 
 fn render_reset_modal(f: &mut Frame, m: &ResetModal) {
-    let lines = vec![
+    let mut lines = vec![
         Line::from(
             "Wipes cash, positions, open orders, and trade history, then starts fresh.".fg(DIM),
         ),
         Line::from(""),
         field_line("Starting balance ($)", &m.balance, true),
-        Line::from(""),
-        match &m.error {
-            Some(e) => Line::from(Span::styled(format!("✗ {e}"), Style::default().fg(BAD))),
-            None => {
-                Line::from("Guards and copy-trades are kept; only the account is reset.".fg(DIM))
-            }
-        },
-        Line::from("Enter confirm · Esc cancel".fg(DIM)),
     ];
+    if m.has_copy {
+        let val = if m.disable_copy { "Yes" } else { "No" };
+        lines.push(Line::from(vec![
+            "Disable copy-trading on reset? ".fg(DIM),
+            Span::styled(format!("[{val}]"), Style::default().fg(GOLD).bold()),
+            "  (y/n)".fg(DIM),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(match &m.error {
+        Some(e) => Line::from(Span::styled(format!("✗ {e}"), Style::default().fg(BAD))),
+        None => Line::from("Guards are kept; only the account is reset.".fg(DIM)),
+    });
+    lines.push(Line::from("Enter confirm · Esc cancel".fg(DIM)));
     popup(f, 58, "RESET PAPER ACCOUNT", GOLD, lines);
 }
 
@@ -2692,6 +2841,7 @@ fn trade_stats(acct: &crate::paper::types::PaperAccount) -> TradeStats {
 /// equity snapshotting show nothing.
 struct EquityMetrics {
     sharpe: Option<Decimal>,
+    max_drawdown: Option<Decimal>,
 }
 
 fn equity_metrics(curve: &[(chrono::DateTime<chrono::Utc>, Decimal)]) -> Option<EquityMetrics> {
@@ -2703,6 +2853,7 @@ fn equity_metrics(curve: &[(chrono::DateTime<chrono::Utc>, Decimal)]) -> Option<
         .iter()
         .map(|&(_, e)| f64::try_from(e).unwrap_or(0.0))
         .collect();
+    let max_drawdown = crate::paper::engine::max_drawdown_pct(&eq);
     let returns: Vec<f64> = eq
         .windows(2)
         .filter(|w| w[0] != 0.0)
@@ -2716,7 +2867,10 @@ fn equity_metrics(curve: &[(chrono::DateTime<chrono::Utc>, Decimal)]) -> Option<
         let sd = var.sqrt();
         (sd > 0.0).then(|| Decimal::try_from(mean / sd).unwrap_or_default().round_dp(2))
     };
-    Some(EquityMetrics { sharpe })
+    Some(EquityMetrics {
+        sharpe,
+        max_drawdown,
+    })
 }
 
 fn pnl_color(v: Decimal) -> Color {
@@ -2727,6 +2881,17 @@ fn pnl_color(v: Decimal) -> Color {
     } else {
         Color::White
     }
+}
+
+/// Green/red graded by magnitude: bigger |roi| pushes the hue toward white so
+/// large movers glow. `t` saturates at ±50% ROI.
+fn pnl_heat(v: Decimal, roi: Decimal) -> Color {
+    let base = pnl_color(v);
+    if v == Decimal::ZERO {
+        return base;
+    }
+    let t = (f64::try_from(roi.abs()).unwrap_or(0.0) / 0.5).clamp(0.0, 1.0) as f32;
+    lerp(base, Color::White, t * 0.5)
 }
 
 fn money(d: Decimal) -> String {
@@ -2838,6 +3003,8 @@ mod stats_tests {
         let mut t = Terminal::new(TestBackend::new(70, 14)).unwrap();
         let m = ResetModal {
             balance: "10000".into(),
+            disable_copy: true,
+            has_copy: false,
             error: None,
         };
         t.draw(|f| render_reset_modal(f, &m)).unwrap();
@@ -2851,6 +3018,38 @@ mod stats_tests {
         assert!(text.contains('╭'), "rounded corner missing");
         assert!(text.contains("RESET PAPER ACCOUNT"), "title missing");
         assert!(text.contains("Esc cancel"), "footer clipped");
+    }
+
+    #[test]
+    fn prob_bar_fills_and_labels() {
+        let bar = prob_bar(dec!(0.68), 10);
+        let text: String = bar.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text.matches('█').count(), 7); // 0.68 * 10 rounds to 7 cells
+        assert_eq!(text.matches('░').count(), 3);
+        assert!(text.contains("68.0%"));
+        // Favorite is green, longshot gold.
+        assert_eq!(prob_bar(dec!(0.9), 10).spans[0].style.fg, Some(GOOD));
+        assert_eq!(prob_bar(dec!(0.1), 10).spans[0].style.fg, Some(GOLD));
+    }
+
+    #[test]
+    fn pnl_heat_brightens_with_magnitude() {
+        // Zero returns the flat base.
+        assert_eq!(pnl_heat(dec!(0), dec!(0.3)), Color::White);
+        // Bigger ROI → brighter (closer to white) for a winner.
+        let brightness = |c: Color| match c {
+            Color::Rgb(r, g, b) => r as u16 + g as u16 + b as u16,
+            _ => 0,
+        };
+        let small = pnl_heat(dec!(5), dec!(0.05));
+        let big = pnl_heat(dec!(5), dec!(0.5));
+        assert!(brightness(big) > brightness(small), "big ROI should glow");
+        // Sign preserved: winner stays greenish, loser reddish.
+        if let (Color::Rgb(_, wg, _), Color::Rgb(lr, _, _)) =
+            (pnl_heat(dec!(5), dec!(0.5)), pnl_heat(dec!(-5), dec!(0.5)))
+        {
+            assert!(wg > 150 && lr > 150);
+        }
     }
 
     #[test]

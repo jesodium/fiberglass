@@ -2,14 +2,14 @@ use clap::Parser as _;
 
 pub async fn run_shell() -> anyhow::Result<()> {
     println!();
-    println!("  Polymarket CLI · Interactive Shell");
+    println!("  fiberglass · Interactive Shell");
     println!("  Type 'help' for commands, 'exit' to quit.");
     println!();
 
     let mut rl = rustyline::DefaultEditor::new()?;
 
     loop {
-        match rl.readline("polymarket> ") {
+        match rl.readline("fiberglass> ") {
             Ok(line) => {
                 let line = line.trim();
                 if line.is_empty() {

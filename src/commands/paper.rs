@@ -393,12 +393,8 @@ pub async fn execute(args: PaperArgs, output: OutputFormat) -> Result<()> {
 
         PaperCommand::Export { what } => {
             let account = store::load_required()?;
-            let (name, csv) = match what {
-                ExportKind::Trades => ("trades", export_trades(&account)),
-                ExportKind::Positions => ("positions", export_positions(&account)),
-                ExportKind::History => ("history", export_history(&account)),
-            };
-            let path = write_export(name, &csv)?;
+            let (name, csv) = export_csv(&account, what);
+            let path = write_export(&format!("paper-{name}"), &csv, None)?;
             match output {
                 OutputFormat::Table => {
                     println!(
@@ -420,15 +416,43 @@ pub async fn execute(args: PaperArgs, output: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-/// Save a CSV to `~/Desktop/paper-<name>-<timestamp>.csv` (falls back to the
-/// home dir if there's no Desktop) and return the path written.
-fn write_export(name: &str, csv: &str) -> Result<std::path::PathBuf> {
-    let dir = dirs::desktop_dir()
-        .or_else(dirs::home_dir)
-        .context("Could not determine Desktop or home directory")?;
-    let file = format!("paper-{}-{}.csv", name, Utc::now().format("%Y%m%d-%H%M%S"));
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let path = dir.join(file);
+/// Render the requested CSV for an account, returning `(kind_label, csv)`.
+/// Shared by paper export and the live `portfolio --export` path.
+pub(crate) fn export_csv(account: &PaperAccount, what: ExportKind) -> (&'static str, String) {
+    match what {
+        ExportKind::Trades => ("trades", export_trades(account)),
+        ExportKind::Positions => ("positions", export_positions(account)),
+        ExportKind::History => ("history", export_history(account)),
+    }
+}
+
+/// Write a CSV to `out` when given, else `~/Desktop/<name>-<timestamp>.csv`
+/// (falling back to the home dir if there's no Desktop). Returns the path.
+pub(crate) fn write_export(
+    name: &str,
+    csv: &str,
+    out: Option<std::path::PathBuf>,
+) -> Result<std::path::PathBuf> {
+    let path = match out {
+        Some(p) => {
+            if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            p
+        }
+        None => {
+            let dir = dirs::desktop_dir()
+                .or_else(dirs::home_dir)
+                .context("Could not determine Desktop or home directory")?;
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+            dir.join(format!(
+                "{}-{}.csv",
+                name,
+                Utc::now().format("%Y%m%d-%H%M%S")
+            ))
+        }
+    };
     std::fs::write(&path, csv).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }

@@ -34,9 +34,13 @@ pub enum CopyTradeCommand {
         /// Instance id (defaults to the nickname or a wallet prefix)
         #[arg(long)]
         id: Option<String>,
-        /// pUSD to deploy on each copied buy
+        /// pUSD to deploy on each copied buy (ignored when --ratio is set)
         #[arg(long, default_value = "25")]
         size: Decimal,
+        /// Size copies as leader_usdc_size * ratio instead of a fixed --size
+        /// (still capped by --max). Omit to keep fixed-dollar sizing.
+        #[arg(long)]
+        ratio: Option<Decimal>,
         /// Hard ceiling (pUSD) on any single copied buy
         #[arg(long = "max", default_value = "100")]
         max_dollar: Decimal,
@@ -107,6 +111,7 @@ pub async fn execute(args: CopyTradeArgs, output: OutputFormat) -> Result<()> {
             nickname,
             id,
             size,
+            ratio,
             max_dollar,
             min_price,
             max_price,
@@ -125,6 +130,7 @@ pub async fn execute(args: CopyTradeArgs, output: OutputFormat) -> Result<()> {
                 wallet: wallet_str,
                 nickname: nickname.clone(),
                 copy_size_usd: size,
+                copy_ratio: ratio,
                 max_dollar_cap: max_dollar,
                 price_min: min_price,
                 price_max: max_price,

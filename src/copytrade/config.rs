@@ -24,8 +24,13 @@ pub(crate) struct CopyTrader {
     pub wallet: String,
     /// Friendly label for logs and listings.
     pub nickname: String,
-    /// pUSD to deploy on each copied buy.
+    /// pUSD to deploy on each copied buy (used when `copy_ratio` is unset).
     pub copy_size_usd: Decimal,
+    /// When set, size copied buys as `leader_usdc_size * copy_ratio` (capped by
+    /// `max_dollar_cap`) instead of the fixed `copy_size_usd`. `None` keeps the
+    /// original fixed-dollar behaviour, so existing rosters are unchanged.
+    #[serde(default)]
+    pub copy_ratio: Option<Decimal>,
     /// Hard ceiling (pUSD) on any single copied buy — caps `copy_size_usd`.
     pub max_dollar_cap: Decimal,
     /// Only copy buys whose fill price is at or above this (probability 0..1).

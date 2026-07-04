@@ -463,6 +463,29 @@ pub(crate) fn realized_pnl(account: &PaperAccount) -> Decimal {
     account.trades.iter().filter_map(|t| t.realized_pnl).sum()
 }
 
+/// Peak-to-trough drawdown over an equity series, as a percent (0..100).
+/// `None` for an empty series. Shared by paper stats and the TUI dashboard.
+pub(crate) fn max_drawdown_pct(equity: &[f64]) -> Option<Decimal> {
+    if equity.is_empty() {
+        return None;
+    }
+    let mut peak = f64::MIN;
+    let mut max_dd = 0.0_f64;
+    for &e in equity {
+        if e > peak {
+            peak = e;
+        }
+        if peak > 0.0 {
+            max_dd = max_dd.max((peak - e) / peak);
+        }
+    }
+    Some(
+        Decimal::try_from(max_dd * 100.0)
+            .unwrap_or_default()
+            .round_dp(2),
+    )
+}
+
 /// Performance statistics derived from the trade log.
 pub(crate) fn compute_stats(account: &PaperAccount) -> Stats {
     let trades = &account.trades;
@@ -507,6 +530,11 @@ pub(crate) fn compute_stats(account: &PaperAccount) -> Stats {
         })
         .collect();
 
+    let dd_series: Vec<f64> = equity_curve
+        .iter()
+        .map(|&(_, e)| f64::try_from(e).unwrap_or(0.0))
+        .collect();
+
     Stats {
         total_trades: trades.len(),
         buys,
@@ -519,6 +547,7 @@ pub(crate) fn compute_stats(account: &PaperAccount) -> Stats {
         best_trade,
         worst_trade,
         daily_pnl,
+        max_drawdown_pct: max_drawdown_pct(&dd_series),
         equity_curve,
     }
 }
@@ -655,6 +684,17 @@ fn check_free_shares(account: &PaperAccount, token_id: &str, shares: Decimal) ->
 mod tests {
     use super::*;
     use rust_decimal_macros::dec;
+
+    #[test]
+    fn drawdown_finds_peak_to_trough() {
+        // Rise to 120, fall to 90 (25% off the 120 peak), recover to 110.
+        let eq = [100.0, 120.0, 90.0, 110.0];
+        assert_eq!(max_drawdown_pct(&eq), Some(dec!(25)));
+        // A monotonic climb has no drawdown.
+        assert_eq!(max_drawdown_pct(&[100.0, 110.0, 130.0]), Some(dec!(0)));
+        // Empty series has no drawdown.
+        assert_eq!(max_drawdown_pct(&[]), None);
+    }
 
     fn meta() -> MarketMeta {
         MarketMeta {

@@ -12,14 +12,15 @@ use polymarket_client_sdk_v2::types::Decimal;
 use polymarket_client_sdk_v2::{POLYGON, derive_proxy_wallet};
 
 use super::data::{MarketRow, ResolutionInfo, Shared};
-use super::live::{LiveOrder, WalletInfo};
+use super::live::{LiveOpenOrder, LiveOrder, WalletInfo};
 use crate::config;
 use crate::copytrade::config::CopyTrader;
 use crate::copytrade::engine::CopyEngine;
 use crate::paper::engine as paper_engine;
 use crate::paper::store;
 use crate::paper::types::{
-    MarketMeta, OrderKind, PaperAccount, Position, Quote, TradeSide, default_starting_balance,
+    MarketMeta, OpenOrder, OrderKind, PaperAccount, Position, PositionView, Quote, TradeSide,
+    default_starting_balance,
 };
 use crate::settings::{self, Settings};
 
@@ -153,6 +154,104 @@ pub(crate) enum SettingRow {
     Field(SettingField),
 }
 
+/// Number of sortable columns in the Holdings table (Market, Outcome, Shares,
+/// Avg, Mark, Value, uPnL). Used to bound the `o` sort-cycle key.
+pub(crate) const HOLDINGS_SORT_COLS: usize = 7;
+/// Sortable columns in the Positions table: Market, Out, Shares, Avg, Mark,
+/// uPnL, ROI.
+pub(crate) const POSITIONS_SORT_COLS: usize = 7;
+/// Sortable columns in the Orders table (paper and live both expose 7).
+pub(crate) const ORDERS_SORT_COLS: usize = 7;
+
+fn cmp_opt<T: Ord>(a: Option<T>, b: Option<T>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn apply_dir(ord: std::cmp::Ordering, asc: bool) -> std::cmp::Ordering {
+    if asc { ord } else { ord.reverse() }
+}
+
+fn side_rank(s: TradeSide) -> u8 {
+    match s {
+        TradeSide::Buy => 0,
+        TradeSide::Sell => 1,
+    }
+}
+
+/// Sort positions by the Positions-table column index: 0 Market, 1 Outcome,
+/// 2 Shares, 3 Avg, 4 Mark, 5 uPnL, 6 ROI.
+fn sort_position_views(list: &mut [PositionView], col: usize, asc: bool) {
+    list.sort_by(|a, b| {
+        let ord = match col {
+            0 => a
+                .position
+                .question
+                .to_lowercase()
+                .cmp(&b.position.question.to_lowercase()),
+            1 => a
+                .position
+                .outcome
+                .to_lowercase()
+                .cmp(&b.position.outcome.to_lowercase()),
+            2 => a.position.size.cmp(&b.position.size),
+            3 => a.position.avg_price.cmp(&b.position.avg_price),
+            4 => cmp_opt(a.mark_price, b.mark_price),
+            5 => cmp_opt(a.unrealized_pnl, b.unrealized_pnl),
+            6 => cmp_opt(a.roi(), b.roi()),
+            _ => std::cmp::Ordering::Equal,
+        };
+        apply_dir(ord, asc)
+    });
+}
+
+/// Sort paper orders by column: 0 ID, 1 Side, 2 Market, 3 Outcome, 4 Price,
+/// 5 Size, 6 Created.
+fn sort_paper_orders(list: &mut [OpenOrder], col: usize, asc: bool) {
+    list.sort_by(|a, b| {
+        let ord = match col {
+            0 => a.id.cmp(&b.id),
+            1 => side_rank(a.side).cmp(&side_rank(b.side)),
+            2 => a.question.to_lowercase().cmp(&b.question.to_lowercase()),
+            3 => a.outcome.to_lowercase().cmp(&b.outcome.to_lowercase()),
+            4 => a.price.cmp(&b.price),
+            5 => a.size.cmp(&b.size),
+            6 => a.created_at.cmp(&b.created_at),
+            _ => std::cmp::Ordering::Equal,
+        };
+        apply_dir(ord, asc)
+    });
+}
+
+/// Sort live CLOB orders by column: 0 ID, 1 Side, 2 Outcome, 3 Price, 4 Size,
+/// 5 Matched, 6 Created. Numeric columns arrive as strings, so parse them.
+fn sort_live_orders(list: &mut [LiveOpenOrder], col: usize, asc: bool) {
+    let num = |s: &str| s.parse::<f64>().unwrap_or(0.0);
+    list.sort_by(|a, b| {
+        let ord = match col {
+            0 => a.id.cmp(&b.id),
+            1 => a.side.to_lowercase().cmp(&b.side.to_lowercase()),
+            2 => a.outcome.to_lowercase().cmp(&b.outcome.to_lowercase()),
+            3 => num(&a.price)
+                .partial_cmp(&num(&b.price))
+                .unwrap_or(std::cmp::Ordering::Equal),
+            4 => num(&a.size)
+                .partial_cmp(&num(&b.size))
+                .unwrap_or(std::cmp::Ordering::Equal),
+            5 => num(&a.matched)
+                .partial_cmp(&num(&b.matched))
+                .unwrap_or(std::cmp::Ordering::Equal),
+            6 => a.created_at.cmp(&b.created_at),
+            _ => std::cmp::Ordering::Equal,
+        };
+        apply_dir(ord, asc)
+    });
+}
+
 pub(crate) const SETTING_ROWS: [SettingRow; 11] = [
     SettingRow::Mode,
     SettingRow::AutoSettle,
@@ -195,6 +294,12 @@ fn join_decimals(values: &[Decimal]) -> String {
 /// Paper-account reset form: choose a starting balance, wipe everything else.
 pub(crate) struct ResetModal {
     pub balance: String,
+    /// Turn off all copy-trade followers on reset (avoids instantly re-copying a
+    /// high-frequency trader back to square one). Only shown when the roster is
+    /// non-empty.
+    pub disable_copy: bool,
+    /// Whether any followers exist — gates the copy toggle in the modal.
+    pub has_copy: bool,
     pub error: Option<String>,
 }
 
@@ -357,6 +462,15 @@ pub(crate) struct App {
     pub search: String,
     pub searching: bool,
 
+    /// Local table filter for the read-only Holdings/History tables (substring
+    /// match, no API call). Active while `table_filtering` captures input.
+    pub table_filter: String,
+    pub table_filtering: bool,
+    /// Sort column index + direction for the Holdings/History tables. The index
+    /// is clamped to each table's column count at render time.
+    pub sort_col: usize,
+    pub sort_asc: bool,
+
     /// The market opened in MarketDetail and which outcome token is focused.
     pub detail: Option<MarketRow>,
     pub detail_token: usize,
@@ -368,7 +482,7 @@ pub(crate) struct App {
     pub modal: Option<OrderModal>,
     /// Follow-wallet form (Copytrade tab → `n`).
     pub copy_modal: Option<CopyModal>,
-    /// Paper-account reset form (Settings tab → `r`).
+    /// Paper-account reset form (Settings tab → Shift+L).
     pub reset_modal: Option<ResetModal>,
     /// Onboarding flow when no wallet is configured in live mode.
     pub onboarding: Option<OnboardingState>,
@@ -443,6 +557,10 @@ impl App {
             settings_modal: None,
             search: String::new(),
             searching: false,
+            table_filter: String::new(),
+            table_filtering: false,
+            sort_col: 0,
+            sort_asc: false,
             detail: None,
             detail_scroll: 0,
             detail_token: 0,
@@ -606,6 +724,22 @@ impl App {
             }
             return;
         }
+        // Local table filter (Holdings/History) captures input live, no API call.
+        if self.table_filtering {
+            match key.code {
+                KeyCode::Esc => {
+                    self.table_filtering = false;
+                    self.table_filter.clear();
+                }
+                KeyCode::Enter => self.table_filtering = false,
+                KeyCode::Backspace => {
+                    self.table_filter.pop();
+                }
+                KeyCode::Char(c) => self.table_filter.push(c),
+                _ => {}
+            }
+            return;
+        }
 
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
@@ -618,6 +752,7 @@ impl App {
                 let idx = c as usize - '1' as usize;
                 if idx < View::TABS.len() {
                     self.view = View::TABS[idx];
+                    self.reset_table_view();
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => self.move_sel(1),
@@ -630,11 +765,44 @@ impl App {
                     self.search.clear();
                     self.markets_sel = 0;
                     self.status = "Search cleared.".to_string();
+                } else if !self.table_filter.is_empty() {
+                    self.table_filter.clear();
+                    self.status = "Filter cleared.".to_string();
                 }
             }
             KeyCode::Char('/') if self.view == View::Markets => {
                 self.searching = true;
                 self.search.clear();
+            }
+            // Local substring filter on the tabular views.
+            KeyCode::Char('/')
+                if matches!(
+                    self.view,
+                    View::Portfolio | View::History | View::Positions | View::Orders
+                ) =>
+            {
+                self.table_filtering = true;
+                self.table_filter.clear();
+                // Filtering narrows from the top; keep the cursor in range.
+                self.positions_sel = 0;
+                self.orders_sel = 0;
+            }
+            // Column sort: `o` cycles the sort column, `O` reverses direction.
+            // History is filter-only (kept newest-first), so it's excluded.
+            KeyCode::Char('o')
+                if matches!(self.view, View::Portfolio | View::Positions | View::Orders) =>
+            {
+                let cols = match self.view {
+                    View::Positions => POSITIONS_SORT_COLS,
+                    View::Orders => ORDERS_SORT_COLS,
+                    _ => HOLDINGS_SORT_COLS,
+                };
+                self.sort_col = (self.sort_col + 1) % cols;
+            }
+            KeyCode::Char('O')
+                if matches!(self.view, View::Portfolio | View::Positions | View::Orders) =>
+            {
+                self.sort_asc = !self.sort_asc;
             }
             KeyCode::Left | KeyCode::Char('h') if self.view == View::MarketDetail => {
                 if self.detail_token > 0 {
@@ -797,15 +965,6 @@ impl App {
                     self.status = "Import a wallet first (m).".into();
                 }
             }
-            // Settings: reset the paper account.
-            KeyCode::Char('r') if self.view == View::Settings => {
-                if self.live {
-                    self.status =
-                        "Reset only applies to the paper account. Relaunch with `--paper`.".into();
-                } else {
-                    self.open_reset_modal();
-                }
-            }
             KeyCode::Char('U') if self.update_available.is_some() => {
                 self.status = "Quitting to run upgrade…".into();
                 self.should_quit = true;
@@ -820,6 +979,18 @@ impl App {
         let n = View::TABS.len() as i32;
         let next = (cur as i32 + dir).rem_euclid(n) as usize;
         self.view = View::TABS[next];
+        self.reset_table_view();
+    }
+
+    /// Clear the shared table filter + sort when leaving a tab, so a filter set
+    /// on one table doesn't silently hide rows on the next.
+    pub(crate) fn reset_table_view(&mut self) {
+        self.table_filtering = false;
+        self.table_filter.clear();
+        self.sort_col = 0;
+        self.sort_asc = false;
+        self.positions_sel = 0;
+        self.orders_sel = 0;
     }
 
     fn move_sel(&mut self, dir: i32) {
@@ -837,14 +1008,14 @@ impl App {
                 step(&mut self.markets_sel, len);
             }
             View::Positions => {
-                let len = self.account.lock().unwrap().positions.len();
-                step(&mut self.positions_sel, len);
+                let (open, resolved) = self.ordered_positions();
+                step(&mut self.positions_sel, open.len() + resolved.len());
             }
             View::Orders => {
                 let len = if self.live {
-                    self.data.lock().unwrap().live_orders.len()
+                    self.ordered_live_orders().len()
                 } else {
-                    self.account.lock().unwrap().open_orders.len()
+                    self.ordered_paper_orders().len()
                 };
                 step(&mut self.orders_sel, len);
             }
@@ -1085,6 +1256,8 @@ impl App {
         };
         self.reset_modal = Some(ResetModal {
             balance: prefill,
+            disable_copy: true,
+            has_copy: !self.copy_engine.snapshot().is_empty(),
             error: None,
         });
     }
@@ -1125,30 +1298,81 @@ impl App {
         self.open_modal_with(p.token_id, p.question, p.outcome, side);
     }
 
-    /// The position under the Positions-tab cursor. Rows render open positions
-    /// first, then resolved (redeemable) ones, each in the account's BTreeMap
-    /// order — this walks that same order so the cursor lines up with the table.
+    /// True when a row with this market/outcome passes the active table filter.
+    fn row_matches_filter(&self, question: &str, outcome: &str) -> bool {
+        let f = self.table_filter.to_lowercase();
+        f.is_empty() || question.to_lowercase().contains(&f) || outcome.to_lowercase().contains(&f)
+    }
+
+    /// Positions in display order: open (live) first, then resolved
+    /// (redeemable), each passed through the active filter and column sort.
+    ///
+    /// This is the single source of truth for the Positions tab: the render
+    /// path, the cursor length ([`move_sel`]), and the b/s/r selection→action
+    /// mapping ([`selected_position`], [`redeem_selected_position`]) all consume
+    /// it, so a filtered/sorted row can never resolve to a different position
+    /// than the one highlighted.
+    pub(crate) fn ordered_positions(&self) -> (Vec<PositionView>, Vec<PositionView>) {
+        let (marks, resolutions) = {
+            let d = self.data.lock().unwrap();
+            let marks: std::collections::BTreeMap<String, Decimal> =
+                d.marks.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            let resolved: HashSet<String> = d.resolutions.keys().cloned().collect();
+            (marks, resolved)
+        };
+        let view = {
+            let acct = self.account.lock().unwrap();
+            paper_engine::portfolio_view(&acct, &marks)
+        };
+        let (mut open, mut resolved): (Vec<PositionView>, Vec<PositionView>) = view
+            .positions
+            .into_iter()
+            .filter(|p| self.row_matches_filter(&p.position.question, &p.position.outcome))
+            .partition(|p| !resolutions.contains(&p.position.token_id));
+        sort_position_views(&mut open, self.sort_col, self.sort_asc);
+        sort_position_views(&mut resolved, self.sort_col, self.sort_asc);
+        (open, resolved)
+    }
+
+    /// The position under the Positions-tab cursor, resolved through the same
+    /// ordering the table renders (see [`ordered_positions`]).
     fn selected_position(&self) -> Option<Position> {
-        let resolved: std::collections::HashSet<String> = self
+        let (open, resolved) = self.ordered_positions();
+        open.into_iter()
+            .chain(resolved)
+            .nth(self.positions_sel)
+            .map(|p| p.position)
+    }
+
+    /// Paper open orders in display order (filtered + sorted). Shared by the
+    /// Orders render and the cancel-selected-order action.
+    pub(crate) fn ordered_paper_orders(&self) -> Vec<OpenOrder> {
+        let mut orders: Vec<OpenOrder> = self
+            .account
+            .lock()
+            .unwrap()
+            .open_orders
+            .iter()
+            .filter(|o| self.row_matches_filter(&o.question, &o.outcome))
+            .cloned()
+            .collect();
+        sort_paper_orders(&mut orders, self.sort_col, self.sort_asc);
+        orders
+    }
+
+    /// Live CLOB orders in display order (filtered + sorted).
+    pub(crate) fn ordered_live_orders(&self) -> Vec<LiveOpenOrder> {
+        let mut orders: Vec<LiveOpenOrder> = self
             .data
             .lock()
             .unwrap()
-            .resolutions
-            .keys()
+            .live_orders
+            .iter()
+            .filter(|o| self.row_matches_filter("", &o.outcome))
             .cloned()
             .collect();
-        let acct = self.account.lock().unwrap();
-        let mut ordered: Vec<&Position> = acct
-            .positions
-            .values()
-            .filter(|p| !resolved.contains(&p.token_id))
-            .collect();
-        ordered.extend(
-            acct.positions
-                .values()
-                .filter(|p| resolved.contains(&p.token_id)),
-        );
-        ordered.get(self.positions_sel).map(|p| (*p).clone())
+        sort_live_orders(&mut orders, self.sort_col, self.sort_asc);
+        orders
     }
 
     fn open_modal_with(
@@ -1598,6 +1822,8 @@ impl App {
             KeyCode::Backspace => {
                 m.balance.pop();
             }
+            KeyCode::Char('y') | KeyCode::Char('Y') if m.has_copy => m.disable_copy = true,
+            KeyCode::Char('n') | KeyCode::Char('N') if m.has_copy => m.disable_copy = false,
             KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => m.balance.push(c),
             KeyCode::Enter => self.submit_reset(),
             _ => {}
@@ -1605,8 +1831,8 @@ impl App {
     }
 
     fn submit_reset(&mut self) {
-        let bal_s = match self.reset_modal.as_ref() {
-            Some(m) => m.balance.clone(),
+        let (bal_s, disable_copy) = match self.reset_modal.as_ref() {
+            Some(m) => (m.balance.clone(), m.disable_copy && m.has_copy),
             None => return,
         };
         let balance = if bal_s.trim().is_empty() {
@@ -1635,13 +1861,23 @@ impl App {
             *acct = PaperAccount::new(balance, true);
             let _ = store::save_force(&acct); // reset lowers next_id; bypass the stale-write guard
         }
+        if disable_copy {
+            self.copy_engine.disable_all();
+        }
         self.positions_sel = 0;
         self.orders_sel = 0;
         self.history_scroll = 0;
-        self.status = format!(
-            "Paper account reset — fresh ${} balance, positions and history cleared.",
-            balance.round_dp(2)
-        );
+        self.status = if disable_copy {
+            format!(
+                "Paper account reset — fresh ${} balance; copy-trading disabled.",
+                balance.round_dp(2)
+            )
+        } else {
+            format!(
+                "Paper account reset — fresh ${} balance, positions and history cleared.",
+                balance.round_dp(2)
+            )
+        };
         self.reset_modal = None;
     }
 
@@ -1652,10 +1888,10 @@ impl App {
             self.cancel_selected_live_order();
             return;
         }
-        let id = {
-            let acct = self.account.lock().unwrap();
-            acct.open_orders.get(self.orders_sel).map(|o| o.id)
-        };
+        let id = self
+            .ordered_paper_orders()
+            .get(self.orders_sel)
+            .map(|o| o.id);
         let Some(id) = id else { return };
         let mut acct = self.account.lock().unwrap();
         match paper_engine::cancel_order(&mut acct, id) {
@@ -1675,10 +1911,7 @@ impl App {
     /// order disappears from the list optimistically; the next slow refresh
     /// re-syncs from the CLOB either way.
     fn cancel_selected_live_order(&mut self) {
-        let order = {
-            let d = self.data.lock().unwrap();
-            d.live_orders.get(self.orders_sel).cloned()
-        };
+        let order = self.ordered_live_orders().into_iter().nth(self.orders_sel);
         let Some(order) = order else {
             self.status = "No live order selected.".into();
             return;
@@ -1910,6 +2143,10 @@ impl App {
             wallet,
             nickname: nickname.clone(),
             copy_size_usd: size,
+            // IMPORTANT NOTE: TUI follow-form is fixed-dollar only; proportional
+            // sizing (copy_ratio) is CLI-only for now. Add a modal field if TUI
+            // users ask for it.
+            copy_ratio: None,
             max_dollar_cap: max_dollar,
             price_min: min_price,
             price_max: max_price,
@@ -2339,6 +2576,33 @@ mod tests {
     #[test]
     fn plain_queries_pass_through() {
         assert_eq!(normalize_search_query("bitcoin etf"), "bitcoin etf");
+    }
+
+    #[test]
+    fn paper_orders_sort_by_price_both_directions() {
+        use rust_decimal_macros::dec;
+        let mk = |id: u64, price| OpenOrder {
+            id,
+            created_at: Utc::now(),
+            token_id: id.to_string(),
+            question: "Q".into(),
+            outcome: "Yes".into(),
+            side: TradeSide::Buy,
+            price,
+            size: dec!(1),
+        };
+        let mut orders = vec![mk(1, dec!(0.30)), mk(2, dec!(0.10)), mk(3, dec!(0.20))];
+        // Column 4 = Price. Descending (asc=false) is the sort default.
+        sort_paper_orders(&mut orders, 4, false);
+        assert_eq!(
+            orders.iter().map(|o| o.id).collect::<Vec<_>>(),
+            vec![1, 3, 2]
+        );
+        sort_paper_orders(&mut orders, 4, true);
+        assert_eq!(
+            orders.iter().map(|o| o.id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
     }
 
     #[test]

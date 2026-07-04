@@ -102,6 +102,8 @@ pub(crate) struct TradeEvent {
     pub token_id: String,
     pub side: TradeSide,
     pub price: Decimal,
+    /// The leader's own trade size in USDC (used for proportional copy sizing).
+    pub usdc_size: Decimal,
 }
 
 /// Decide how to mirror one of the followed trader's trades.
@@ -124,7 +126,13 @@ pub(crate) fn decide(
                     cfg.price_max.normalize()
                 )));
             }
-            let usd = cfg.copy_size_usd.min(cfg.max_dollar_cap);
+            // Proportional sizing when a ratio is set: mirror the leader's own
+            // USDC size scaled by `copy_ratio`, still bounded by the hard cap.
+            // Otherwise fall back to the fixed per-trade dollar size.
+            let usd = match cfg.copy_ratio {
+                Some(ratio) => (ev.usdc_size * ratio).min(cfg.max_dollar_cap),
+                None => cfg.copy_size_usd.min(cfg.max_dollar_cap),
+            };
             if usd <= Decimal::ZERO {
                 return Some(CopyDecision::Skip("copy size is zero".to_string()));
             }
@@ -336,6 +344,18 @@ impl CopyEngine {
         for id in ids {
             let _ = self.set_enabled(&id, true);
             let _ = self.start(&id);
+        }
+    }
+
+    /// Disable and stop every follower. Called on paper reset so a fresh account
+    /// isn't instantly re-filled by an already-running copy target.
+    pub fn disable_all(&self) {
+        let ids: Vec<String> = {
+            let st = self.state.lock().unwrap();
+            st.traders.iter().map(|t| t.cfg.id.clone()).collect()
+        };
+        for id in ids {
+            let _ = self.set_enabled(&id, false);
         }
     }
 
@@ -694,6 +714,7 @@ fn to_trade_event(a: &Activity) -> Option<TradeEvent> {
         token_id: token.to_string(),
         side,
         price,
+        usdc_size: a.usdc_size,
     })
 }
 
@@ -745,6 +766,7 @@ mod tests {
             mirror_sells: true,
             enabled: true,
             paper: true,
+            copy_ratio: None,
         }
     }
 
@@ -753,6 +775,7 @@ mod tests {
             token_id: "123".into(),
             side: TradeSide::Buy,
             price,
+            usdc_size: dec!(100),
         }
     }
 
@@ -761,6 +784,7 @@ mod tests {
             token_id: "123".into(),
             side: TradeSide::Sell,
             price,
+            usdc_size: dec!(100),
         }
     }
 
@@ -787,6 +811,35 @@ mod tests {
             Some(CopyDecision::Act(CopyAction::Buy {
                 token_id: "123".into(),
                 usd: dec!(80),
+            }))
+        );
+    }
+
+    #[test]
+    fn proportional_sizing_scales_leader_size() {
+        let mut t = trader();
+        t.copy_ratio = Some(dec!(0.1)); // 10% of the leader's usdc_size (100)
+        let d = decide(&t, &buy(dec!(0.50)), dec!(0));
+        assert_eq!(
+            d,
+            Some(CopyDecision::Act(CopyAction::Buy {
+                token_id: "123".into(),
+                usd: dec!(10),
+            }))
+        );
+    }
+
+    #[test]
+    fn proportional_sizing_still_capped() {
+        let mut t = trader();
+        t.copy_ratio = Some(dec!(2)); // 2 * 100 = 200, over the 100 cap
+        t.max_dollar_cap = dec!(100);
+        let d = decide(&t, &buy(dec!(0.50)), dec!(0));
+        assert_eq!(
+            d,
+            Some(CopyDecision::Act(CopyAction::Buy {
+                token_id: "123".into(),
+                usd: dec!(100),
             }))
         );
     }

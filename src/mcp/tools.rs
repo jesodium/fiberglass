@@ -344,6 +344,46 @@ pub(super) fn definitions() -> Vec<Value> {
             "Paper performance analytics: win rate, best/worst trade, daily PnL.",
             obj(json!({}), &[]),
         ),
+        tool(
+            "paper_settle",
+            "Settle a held paper position at resolution ($1 won, $0 lost). \
+             Omit `payout` to auto-resolve the winner from Gamma.",
+            obj(
+                json!({
+                    "token_id": str_prop("Token ID (numeric string)"),
+                    "payout": str_prop("Payout per share: '1' won, '0' lost (omit to auto-resolve)"),
+                }),
+                &["token_id"],
+            ),
+        ),
+        tool(
+            "paper_snapshot",
+            "Save, restore, or list named copies of the paper account.",
+            obj(
+                json!({
+                    "action": str_prop("One of: save, restore, list"),
+                    "name": str_prop("Snapshot name (required for save/restore)"),
+                }),
+                &["action"],
+            ),
+        ),
+        tool(
+            "paper_export",
+            "Write the trade log, positions, or per-market history to a CSV file. \
+             Returns the written path.",
+            obj(
+                json!({"what": str_prop("One of: trades, positions, history")}),
+                &["what"],
+            ),
+        ),
+        tool(
+            "get_portfolio",
+            "Portfolio overview (live or paper): equity, cash, PnL, ROI, positions.",
+            obj(
+                json!({"paper": bool_prop("Show the paper portfolio instead of live")}),
+                &[],
+            ),
+        ),
         // ── Misc ─────────────────────────────────────────────────────────
         tool(
             "status",
@@ -538,6 +578,25 @@ pub(super) fn build_argv(name: &str, args: &Value) -> Result<Vec<String>> {
         "paper_orders" => svec(&["paper", "orders"]),
         "paper_cancel" => svec(&["paper", "cancel", &req_str(args, "order_id")?]),
         "paper_stats" => svec(&["paper", "stats"]),
+        "paper_settle" => {
+            let mut a = svec(&["paper", "settle", &req_str(args, "token_id")?]);
+            push_opt(&mut a, args, "payout", "--payout");
+            a
+        }
+        "paper_snapshot" => {
+            let action = req_str(args, "action")?;
+            let mut a = svec(&["paper", "snapshot", &action]);
+            if action == "save" || action == "restore" {
+                a.push(req_str(args, "name")?);
+            }
+            a
+        }
+        "paper_export" => svec(&["paper", "export", &req_str(args, "what")?]),
+        "get_portfolio" => {
+            let mut a = svec(&["portfolio"]);
+            push_flag(&mut a, args, "paper", "--paper");
+            a
+        }
 
         // ── Misc ─────────────────────────────────────────────────────────
         "status" => svec(&["status"]),

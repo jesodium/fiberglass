@@ -291,6 +291,12 @@ pub fn print_stats(stats: &Stats, output: &OutputFormat) -> anyhow::Result<()> {
                     }),
                 ],
                 ["Realized PnL".into(), signed_money(stats.realized_pnl)],
+                [
+                    "Max drawdown".into(),
+                    stats
+                        .max_drawdown_pct
+                        .map_or(DASH.to_string(), |d| format!("{d}%")),
+                ],
                 ["Volume traded".into(), money(stats.volume)],
                 [
                     "Best trade".into(),

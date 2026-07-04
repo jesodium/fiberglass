@@ -28,14 +28,66 @@ pub struct PortfolioArgs {
     /// Show the paper-trading portfolio instead of live
     #[arg(long)]
     pub paper: bool,
+    /// Export to CSV instead of printing: trades, positions, or history
+    #[arg(long, value_enum)]
+    pub export: Option<crate::commands::paper::ExportKind>,
+    /// Output path for --export (default: a timestamped file on the Desktop)
+    #[arg(long)]
+    pub out: Option<std::path::PathBuf>,
 }
 
 pub async fn execute(args: PortfolioArgs, output: OutputFormat) -> Result<()> {
+    if let Some(what) = args.export {
+        let account = if args.paper {
+            paper::store::load_required()?
+        } else {
+            build_live_account().await?
+        };
+        let (kind, csv) = crate::commands::paper::export_csv(&account, what);
+        let prefix = if args.paper { "paper" } else { "live" };
+        let path =
+            crate::commands::paper::write_export(&format!("{prefix}-{kind}"), &csv, args.out)?;
+        let rows = csv.lines().count().saturating_sub(1);
+        match output {
+            OutputFormat::Table => println!("Wrote {rows} rows to {}", path.display()),
+            OutputFormat::Json => print_json(&serde_json::json!({
+                "path": path.display().to_string(),
+                "rows": rows,
+            }))?,
+        }
+        return Ok(());
+    }
     if args.paper {
         paper_portfolio(&output).await
     } else {
         live_portfolio(&output).await
     }
+}
+
+/// Build a `PaperAccount` populated from live wallet data (positions + closed
+/// trades + cash). Marks are not fetched — callers that need marks fetch them.
+async fn build_live_account() -> Result<PaperAccount> {
+    let user = crate::tui::live::resolve_user_address()?;
+    let cash = crate::tui::live::fetch_collateral().await?;
+    let positions = crate::tui::live::fetch_positions(user).await?;
+    let closed_trades = crate::tui::live::fetch_closed_trades(user).await?;
+
+    let mut account = PaperAccount {
+        version: paper::types::ACCOUNT_VERSION,
+        enabled: false,
+        created_at: Utc::now(),
+        initial_balance: Decimal::ZERO,
+        cash,
+        next_id: 1,
+        positions: BTreeMap::new(),
+        open_orders: Vec::new(),
+        trades: closed_trades,
+        equity_curve: Vec::new(),
+    };
+    for p in positions {
+        account.positions.insert(p.token_id.clone(), p);
+    }
+    Ok(account)
 }
 
 fn colored_signed(d: Decimal) -> String {
@@ -156,26 +208,7 @@ async fn paper_portfolio(output: &OutputFormat) -> Result<()> {
 }
 
 async fn live_portfolio(output: &OutputFormat) -> Result<()> {
-    let user = crate::tui::live::resolve_user_address()?;
-    let cash = crate::tui::live::fetch_collateral().await?;
-    let positions = crate::tui::live::fetch_positions(user).await?;
-    let closed_trades = crate::tui::live::fetch_closed_trades(user).await?;
-
-    let mut account = PaperAccount {
-        version: paper::types::ACCOUNT_VERSION,
-        enabled: false,
-        created_at: Utc::now(),
-        initial_balance: Decimal::ZERO,
-        cash,
-        next_id: 1,
-        positions: BTreeMap::new(),
-        open_orders: Vec::new(),
-        trades: closed_trades,
-        equity_curve: Vec::new(),
-    };
-    for p in positions {
-        account.positions.insert(p.token_id.clone(), p);
-    }
+    let account = build_live_account().await?;
 
     let tokens: Vec<String> = account.positions.keys().cloned().collect();
     let client = crate::auth::unauthenticated_clob_client()?;
@@ -252,10 +285,13 @@ fn print_full_portfolio(
                 kv("Reserved (orders)", money(view.reserved_cash));
                 kv("Initial Balance", money(view.initial_balance));
             }
-            if let Some(eq) = equity_stats
-                && let Some(sh) = eq.sharpe
-            {
-                kv("Sharpe", sh.to_string());
+            if let Some(eq) = &equity_stats {
+                if let Some(sh) = eq.sharpe {
+                    kv("Sharpe", sh.to_string());
+                }
+                if let Some(dd) = eq.max_drawdown {
+                    kv("Max Drawdown", format!("{dd}%"));
+                }
             }
 
             if view.positions.is_empty() {
@@ -296,10 +332,13 @@ fn print_full_portfolio(
                 json["reserved_cash"] = serde_json::json!(view.reserved_cash);
                 json["initial_balance"] = serde_json::json!(view.initial_balance);
             }
-            if let Some(eq) = equity_stats
-                && let Some(sh) = eq.sharpe
-            {
-                json["sharpe"] = serde_json::json!(sh);
+            if let Some(eq) = &equity_stats {
+                if let Some(sh) = eq.sharpe {
+                    json["sharpe"] = serde_json::json!(sh);
+                }
+                if let Some(dd) = eq.max_drawdown {
+                    json["max_drawdown_pct"] = serde_json::json!(dd);
+                }
             }
             print_json(&json)?;
         }
@@ -389,6 +428,7 @@ fn print_recent_trades(trades: &[paper::types::Trade]) {
 
 struct EquityMetrics {
     sharpe: Option<Decimal>,
+    max_drawdown: Option<Decimal>,
 }
 
 fn equity_metrics(curve: &[(chrono::DateTime<chrono::Utc>, Decimal)]) -> Option<EquityMetrics> {
@@ -399,6 +439,7 @@ fn equity_metrics(curve: &[(chrono::DateTime<chrono::Utc>, Decimal)]) -> Option<
         .iter()
         .map(|&(_, e)| f64::try_from(e).unwrap_or(0.0))
         .collect();
+    let max_drawdown = paper::engine::max_drawdown_pct(&eq);
     let returns: Vec<f64> = eq
         .windows(2)
         .filter(|w| w[0] != 0.0)
@@ -412,5 +453,8 @@ fn equity_metrics(curve: &[(chrono::DateTime<chrono::Utc>, Decimal)]) -> Option<
         let sd = var.sqrt();
         (sd > 0.0).then(|| Decimal::try_from(mean / sd).unwrap_or_default().round_dp(2))
     };
-    Some(EquityMetrics { sharpe })
+    Some(EquityMetrics {
+        sharpe,
+        max_drawdown,
+    })
 }
