@@ -14,7 +14,8 @@ use ratatui::widgets::{
 
 use super::app::{
     App, COPY_FIELDS, CopyField, CopyModal, LogoutModal, ModalField, OnboardingState, OrderModal,
-    ResetModal, SETTING_ROWS, SettingRow, SettingsEditModal, View, WalletAction, WalletActionModal,
+    ResetModal, SETTING_ROWS, SettingRow, SettingsEditModal, UpdateModal, View, WalletAction,
+    WalletActionModal,
 };
 use super::data::ResolutionInfo;
 use crate::paper::engine;
@@ -146,6 +147,9 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
     }
     if let Some(rm) = &app.reset_modal {
         render_reset_modal(f, rm);
+    }
+    if let Some(um) = &app.update_modal {
+        render_update_modal(f, um);
     }
     if let Some(sem) = &app.settings_modal {
         render_settings_modal(f, sem);
@@ -2551,6 +2555,53 @@ fn render_reset_modal(f: &mut Frame, m: &ResetModal) {
     });
     lines.push(Line::from("Enter confirm · Esc cancel".fg(DIM)));
     popup(f, 58, "RESET PAPER ACCOUNT", GOLD, lines);
+}
+
+fn render_update_modal(f: &mut Frame, m: &UpdateModal) {
+    let width = 72u16;
+    let height = 22u16.min(f.area().height);
+    let area = centered_rect(width, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = modal_block(&format!("UPDATE TO {}", m.tag), GOLD);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split: scrollable changelog on top, Yes/No footer at the bottom.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(2)])
+        .split(inner);
+
+    let notes: Vec<Line> = m
+        .changelog
+        .lines()
+        .map(|l| Line::from(l.to_string()))
+        .collect();
+    f.render_widget(
+        Paragraph::new(notes)
+            .wrap(Wrap { trim: false })
+            .scroll((m.scroll, 0)),
+        rows[0],
+    );
+
+    let yes = button("Yes", m.confirm);
+    let no = button("No", !m.confirm);
+    let footer = vec![
+        Line::from(vec![yes, Span::raw("   "), no]),
+        Line::from("←/→ choose · Enter confirm · ↑/↓ scroll · Esc cancel".fg(DIM)),
+    ];
+    f.render_widget(Paragraph::new(footer).alignment(Alignment::Center), rows[1]);
+}
+
+/// A pill-style button that inverts when selected.
+fn button(label: &str, selected: bool) -> Span<'static> {
+    let text = format!(" {label} ");
+    if selected {
+        Span::styled(text, Style::default().bg(GOLD).fg(Color::Black).bold())
+    } else {
+        Span::styled(text, Style::default().fg(DIM))
+    }
 }
 
 fn render_settings_modal(f: &mut Frame, m: &SettingsEditModal) {

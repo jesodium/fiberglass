@@ -12,6 +12,9 @@ const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 struct UpdateCache {
     tag: String,
     timestamp: u64,
+    /// Release notes (GitHub release `body`), shown in the TUI update modal.
+    #[serde(default)]
+    body: String,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -32,19 +35,21 @@ fn read_cache() -> Option<UpdateCache> {
     serde_json::from_str(&data).ok()
 }
 
-fn write_cache(tag: &str) {
+fn write_cache(tag: &str, body: &str) {
     let Some(path) = cache_path() else { return };
     let _ = fs::create_dir_all(path.parent().unwrap_or(path.as_path()));
     let cache = UpdateCache {
         tag: tag.to_string(),
         timestamp: now_secs(),
+        body: body.to_string(),
     };
     if let Ok(json) = serde_json::to_string(&cache) {
         let _ = fs::write(path, json);
     }
 }
 
-fn fetch_latest_tag() -> Option<String> {
+/// Fetch the latest release tag and its notes body from GitHub.
+fn fetch_latest_release() -> Option<(String, String)> {
     let output = Command::new("curl")
         .args([
             "-sSf",
@@ -61,7 +66,20 @@ fn fetch_latest_tag() -> Option<String> {
     }
     let body = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-    json["tag_name"].as_str().map(String::from)
+    let tag = json["tag_name"].as_str()?.to_string();
+    let notes = json["body"].as_str().unwrap_or("").to_string();
+    Some((tag, notes))
+}
+
+/// Release notes for the cached latest version, if any. No network call.
+pub(crate) fn changelog() -> Option<String> {
+    let cache = read_cache()?;
+    let notes = cache.body.trim();
+    if notes.is_empty() {
+        None
+    } else {
+        Some(notes.to_string())
+    }
 }
 
 fn is_newer(tag: &str) -> bool {
@@ -99,8 +117,8 @@ pub(crate) fn refresh_cache_if_stale() {
     };
     if stale {
         std::thread::spawn(|| {
-            if let Some(tag) = fetch_latest_tag() {
-                write_cache(&tag);
+            if let Some((tag, notes)) = fetch_latest_release() {
+                write_cache(&tag, &notes);
             }
         });
     }

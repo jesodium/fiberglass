@@ -292,6 +292,16 @@ fn join_decimals(values: &[Decimal]) -> String {
 }
 
 /// Paper-account reset form: choose a starting balance, wipe everything else.
+/// Update confirmation modal: shows the release changelog with a Yes/No choice.
+pub(crate) struct UpdateModal {
+    pub tag: String,
+    pub changelog: String,
+    /// Vertical scroll offset into the changelog.
+    pub scroll: u16,
+    /// Yes/No selection; `true` = Yes (install). Toggled with left/right.
+    pub confirm: bool,
+}
+
 pub(crate) struct ResetModal {
     pub balance: String,
     /// Turn off all copy-trade followers on reset (avoids instantly re-copying a
@@ -484,6 +494,7 @@ pub(crate) struct App {
     pub copy_modal: Option<CopyModal>,
     /// Paper-account reset form (Settings tab → Shift+L).
     pub reset_modal: Option<ResetModal>,
+    pub update_modal: Option<UpdateModal>,
     /// Onboarding flow when no wallet is configured in live mode.
     pub onboarding: Option<OnboardingState>,
     /// Create/import wallet modal from the Settings tab.
@@ -568,6 +579,7 @@ impl App {
             modal: None,
             copy_modal: None,
             reset_modal: None,
+            update_modal: None,
             onboarding,
             logout_modal: None,
             wallet_action_modal: None,
@@ -588,6 +600,15 @@ impl App {
         let notice = self.data.lock().unwrap().notices.pop();
         if let Some(n) = notice {
             self.status = n;
+        }
+        // The startup update check reads a possibly-stale on-disk cache; the
+        // refresh runs in a background thread. Re-check every ~5s until we see a
+        // newer version so the banner and the `U` key light up mid-session.
+        if self.update_available.is_none() && self.frame.is_multiple_of(55) {
+            self.update_available = crate::updater::check_update();
+            if let Some(ref tag) = self.update_available {
+                self.status = format!("Update {tag} available — press U to install.");
+            }
         }
         self.tick_settlement();
     }
@@ -699,6 +720,10 @@ impl App {
         }
         if self.reset_modal.is_some() {
             self.reset_modal_key(key);
+            return;
+        }
+        if self.update_modal.is_some() {
+            self.update_modal_key(key);
             return;
         }
         if self.settings_modal.is_some() {
@@ -966,9 +991,15 @@ impl App {
                 }
             }
             KeyCode::Char('U') if self.update_available.is_some() => {
-                self.status = "Quitting to run upgrade…".into();
-                self.should_quit = true;
-                self.run_upgrade = true;
+                let tag = self.update_available.clone().unwrap_or_default();
+                let changelog = crate::updater::changelog()
+                    .unwrap_or_else(|| "Release notes unavailable.".into());
+                self.update_modal = Some(UpdateModal {
+                    tag,
+                    changelog,
+                    scroll: 0,
+                    confirm: true,
+                });
             }
             _ => {}
         }
@@ -1828,6 +1859,39 @@ impl App {
             KeyCode::Enter => self.submit_reset(),
             _ => {}
         }
+    }
+
+    fn update_modal_key(&mut self, key: KeyEvent) {
+        let Some(m) = self.update_modal.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.update_modal = None,
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
+                m.confirm = !m.confirm;
+            }
+            KeyCode::Up | KeyCode::Char('k') => m.scroll = m.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => m.scroll = m.scroll.saturating_add(1),
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.update_modal = None;
+                self.start_upgrade();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => self.update_modal = None,
+            KeyCode::Enter => {
+                let confirm = m.confirm;
+                self.update_modal = None;
+                if confirm {
+                    self.start_upgrade();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn start_upgrade(&mut self) {
+        self.status = "Quitting to run upgrade…".into();
+        self.should_quit = true;
+        self.run_upgrade = true;
     }
 
     fn submit_reset(&mut self) {
