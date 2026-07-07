@@ -10,6 +10,37 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+## [0.1.20] - 2026-07-07
+
+### added
+- tui: pressing `U` on the update banner now opens a modal with the release's
+  changelog and a yes/no confirm (left/right to choose, enter to install)
+  instead of quitting straight into the upgrade. the banner and the `U` key also
+  light up mid-session once the background version check lands, rather than only
+  on the next launch.
+- tui: local substring filter (`/`) and column sort (`o` to cycle, `O` to
+  reverse) on holdings, history, positions, and orders. every b/s/r/c action
+  routes through the same ordering the table shows, so a sorted or filtered row
+  always hits the row you see. filter/sort state resets on tab switch.
+- live-account csv export via
+  `portfolio --export <trades|positions|history> [--out PATH]`.
+- copytrade: optional `--ratio` proportional sizing off the leader's usdc size
+  (`leader_size * ratio`, capped by `--max`); fixed-dollar stays the default.
+- mcp: `get_portfolio`, `paper_settle`, `paper_snapshot`, and `paper_export`
+  tools (41 total).
+- max-drawdown on the dashboard, portfolio, and paper stats.
+
+### fixed
+- keychain: denying or escaping the os keychain prompt in live mode dropped you
+  into the import-a-key onboarding as if no wallet existed. a denied read is now
+  told apart from a genuinely missing entry, so a configured-but-locked wallet
+  reports a clear error and re-prompts on retry instead of pretending it is
+  unconfigured.
+
+### changed
+- shell prompt rebranded to `fiberglass`; dropped the dead `n create` settings
+  hint.
+
 ## [0.1.19] - 2026-07-03
 
 ### added
