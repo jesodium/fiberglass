@@ -80,11 +80,16 @@ fn keychain_set(key: &str) -> bool {
         .is_ok()
 }
 
-fn keychain_get() -> Option<String> {
-    keyring::Entry::new(&keyring_service(), KEYRING_USER)
-        .ok()?
-        .get_password()
-        .ok()
+/// `Ok(Some)` = key retrieved. `Ok(None)` = no keychain entry exists.
+/// `Err(_)` = an entry may well exist but we couldn't read it (locked, the user
+/// denied the prompt, or no secret service). Callers must not treat this like an
+/// absent wallet.
+fn keychain_get() -> Result<Option<String>, keyring::Error> {
+    match keyring::Entry::new(&keyring_service(), KEYRING_USER).and_then(|e| e.get_password()) {
+        Ok(k) => Ok(Some(k)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 fn keychain_delete() {
@@ -294,19 +299,33 @@ pub fn resolve_key(cli_flag: Option<&str>) -> Result<(Option<String>, KeySource)
     if let Some(cached) = &*slot {
         return Ok((cached.key.clone(), cached.source));
     }
-    if let Some(key) = keychain_get() {
+    let keychain = keychain_get();
+    if let Ok(Some(key)) = &keychain {
         *slot = Some(CachedResolvedKey {
             key: Some(key.clone()),
             source: KeySource::Keychain,
         });
-        return Ok((Some(key), KeySource::Keychain));
+        return Ok((Some(key.clone()), KeySource::Keychain));
     }
-    if let Some(key) = load_config()?.and_then(|c| c.private_key) {
+    // Plaintext fallback (headless boxes with no keychain store the key here).
+    let cfg = load_config()?;
+    if let Some(key) = cfg.as_ref().and_then(|c| c.private_key.clone()) {
         *slot = Some(CachedResolvedKey {
             key: Some(key.clone()),
             source: KeySource::ConfigFile,
         });
         return Ok((Some(key), KeySource::ConfigFile));
+    }
+    // No plaintext key. If the keychain read *failed* (vs. finding no entry) and
+    // a wallet is configured, the key is locked/denied, not missing — surface it
+    // instead of pretending no wallet exists (which drops the user into the
+    // import-a-key onboarding). Left uncached so re-running re-prompts.
+    if keychain.is_err() && cfg.is_some() {
+        return Err(anyhow::anyhow!(
+            "Keychain access denied — could not unlock the saved private key. \
+             Re-open and approve the keychain prompt, or re-import with \
+             `polymarket wallet import <key>`."
+        ));
     }
     *slot = Some(CachedResolvedKey {
         key: None,
@@ -422,9 +441,9 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         unsafe { set("POLYMARKET_KEYRING_SERVICE", "fiberglass-sbtest") };
         assert!(keychain_set("0xdeadbeef"), "no keychain backend available");
-        assert_eq!(keychain_get().as_deref(), Some("0xdeadbeef"));
+        assert_eq!(keychain_get().unwrap().as_deref(), Some("0xdeadbeef"));
         keychain_delete();
-        assert!(keychain_get().is_none());
+        assert!(keychain_get().unwrap().is_none());
         unsafe { unset("POLYMARKET_KEYRING_SERVICE") };
     }
 }
