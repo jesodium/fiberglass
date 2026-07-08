@@ -318,7 +318,12 @@ pub(crate) struct ResetModal {
 pub(crate) enum CopyField {
     Wallet,
     Nickname,
+    /// Toggle between fixed-dollar and leader-proportional sizing.
+    Mode,
+    /// Fixed pUSD per copied buy (shown in fixed mode).
     Size,
+    /// Multiplier on the leader's own size (shown in ratio mode).
+    Ratio,
     MaxDollar,
     MinPrice,
     MaxPrice,
@@ -326,23 +331,14 @@ pub(crate) enum CopyField {
     MirrorSells,
 }
 
-pub(crate) const COPY_FIELDS: [CopyField; 8] = [
-    CopyField::Wallet,
-    CopyField::Nickname,
-    CopyField::Size,
-    CopyField::MaxDollar,
-    CopyField::MinPrice,
-    CopyField::MaxPrice,
-    CopyField::Slippage,
-    CopyField::MirrorSells,
-];
-
 impl CopyField {
     pub fn label(self) -> &'static str {
         match self {
             Self::Wallet => "Wallet (0x…)",
             Self::Nickname => "Nickname",
+            Self::Mode => "Sizing (fixed/ratio)",
             Self::Size => "Copy size ($)",
+            Self::Ratio => "Ratio (x leader size)",
             Self::MaxDollar => "Max per trade ($)",
             Self::MinPrice => "Min price (0..1)",
             Self::MaxPrice => "Max price (0..1)",
@@ -356,13 +352,20 @@ impl CopyField {
 pub(crate) struct CopyModal {
     pub wallet: String,
     pub nickname: String,
+    /// When true the form sizes copies as `ratio * leader size`; otherwise it
+    /// uses the fixed `size`. Drives which of Size/Ratio the form shows.
+    pub use_ratio: bool,
     pub size: String,
+    pub ratio: String,
     pub max_dollar: String,
     pub min_price: String,
     pub max_price: String,
     pub slippage: String,
     pub mirror_sells: bool,
-    /// Index into [`COPY_FIELDS`].
+    /// Set when reconfiguring an existing follower; `None` means a new follow.
+    /// Submitting replaces that follower's rules instead of adding one.
+    pub edit_id: Option<String>,
+    /// Index into [`CopyModal::fields`].
     pub focus: usize,
     pub error: Option<String>,
 }
@@ -372,12 +375,15 @@ impl Default for CopyModal {
         Self {
             wallet: String::new(),
             nickname: String::new(),
+            use_ratio: false,
             size: "25".into(),
+            ratio: "1".into(),
             max_dollar: "100".into(),
             min_price: "0".into(),
             max_price: "1".into(),
             slippage: "2".into(),
             mirror_sells: true,
+            edit_id: None,
             focus: 0,
             error: None,
         }
@@ -385,17 +391,59 @@ impl Default for CopyModal {
 }
 
 impl CopyModal {
-    /// The text buffer for a field, or `None` for the bool toggle.
+    /// Pre-fill the form from an existing follower, in edit mode.
+    fn from_trader(cfg: &CopyTrader) -> Self {
+        let dec = |d: Decimal| d.normalize().to_string();
+        Self {
+            wallet: cfg.wallet.clone(),
+            nickname: cfg.nickname.clone(),
+            use_ratio: cfg.copy_ratio.is_some(),
+            size: dec(cfg.copy_size_usd),
+            ratio: dec(cfg.copy_ratio.unwrap_or(Decimal::ONE)),
+            max_dollar: dec(cfg.max_dollar_cap),
+            min_price: dec(cfg.price_min),
+            max_price: dec(cfg.price_max),
+            slippage: dec(cfg.slippage_pct),
+            mirror_sells: cfg.mirror_sells,
+            edit_id: Some(cfg.id.clone()),
+            focus: 0,
+            error: None,
+        }
+    }
+
+    /// Fields shown for the current sizing mode. Size and Ratio are mutually
+    /// exclusive, so the list length stays constant and `focus` stays valid.
+    pub fn fields(&self) -> [CopyField; 9] {
+        let sizing = if self.use_ratio {
+            CopyField::Ratio
+        } else {
+            CopyField::Size
+        };
+        [
+            CopyField::Wallet,
+            CopyField::Nickname,
+            CopyField::Mode,
+            sizing,
+            CopyField::MaxDollar,
+            CopyField::MinPrice,
+            CopyField::MaxPrice,
+            CopyField::Slippage,
+            CopyField::MirrorSells,
+        ]
+    }
+
+    /// The text buffer for a field, or `None` for the non-text toggles.
     fn buf(&mut self, f: CopyField) -> Option<&mut String> {
         Some(match f {
             CopyField::Wallet => &mut self.wallet,
             CopyField::Nickname => &mut self.nickname,
             CopyField::Size => &mut self.size,
+            CopyField::Ratio => &mut self.ratio,
             CopyField::MaxDollar => &mut self.max_dollar,
             CopyField::MinPrice => &mut self.min_price,
             CopyField::MaxPrice => &mut self.max_price,
             CopyField::Slippage => &mut self.slippage,
-            CopyField::MirrorSells => return None,
+            CopyField::Mode | CopyField::MirrorSells => return None,
         })
     }
 }
@@ -868,6 +916,10 @@ impl App {
             // Copy-trading controls.
             KeyCode::Char('n') if self.view == View::Copytrade => {
                 self.copy_modal = Some(CopyModal::default());
+            }
+            // Reconfigure the selected follower (e.g. switch fixed -> ratio).
+            KeyCode::Char('c') if self.view == View::Copytrade => {
+                self.open_copy_edit();
             }
             KeyCode::Char('s') if self.view == View::Copytrade => {
                 self.copytrade_action(CopyAct::Start)
@@ -2130,8 +2182,9 @@ impl App {
         let Some(m) = self.copy_modal.as_mut() else {
             return;
         };
-        let n = COPY_FIELDS.len();
-        let field = COPY_FIELDS[m.focus];
+        let fields = m.fields();
+        let n = fields.len();
+        let field = fields[m.focus];
         match key.code {
             KeyCode::Esc => self.copy_modal = None,
             KeyCode::Enter => self.submit_copy_modal(),
@@ -2146,6 +2199,10 @@ impl App {
                 if field == CopyField::MirrorSells =>
             {
                 m.mirror_sells = !m.mirror_sells;
+            }
+            // The sizing-mode toggle swaps fixed <-> ratio the same way.
+            KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if field == CopyField::Mode => {
+                m.use_ratio = !m.use_ratio;
             }
             KeyCode::Backspace => {
                 if let Some(buf) = m.buf(field) {
@@ -2178,8 +2235,13 @@ impl App {
         let parse = |s: &str, label: &str| -> Result<Decimal, String> {
             Decimal::from_str(s.trim()).map_err(|_| format!("{label} must be a number"))
         };
-        let (size, max_dollar, min_price, max_price, slippage) = match (
-            parse(&m.size, "Copy size"),
+        // In ratio mode the sizing field is the multiplier; otherwise it's the
+        // fixed dollar size. The unused buffer keeps its default so toggling back
+        // and forth loses nothing.
+        let sizing_label = if m.use_ratio { "Ratio" } else { "Copy size" };
+        let sizing_buf = if m.use_ratio { &m.ratio } else { &m.size };
+        let (sizing, max_dollar, min_price, max_price, slippage) = match (
+            parse(sizing_buf, sizing_label),
             parse(&m.max_dollar, "Max per trade"),
             parse(&m.min_price, "Min price"),
             parse(&m.max_price, "Max price"),
@@ -2196,37 +2258,75 @@ impl App {
                 return;
             }
         };
+        if sizing <= Decimal::ZERO {
+            self.set_copy_error(&format!("{sizing_label} must be greater than zero"));
+            return;
+        }
         if min_price < Decimal::ZERO || max_price > Decimal::ONE || min_price > max_price {
             self.set_copy_error("Price band must satisfy 0 ≤ min ≤ max ≤ 1");
             return;
         }
+        // Fixed mode: size is the dollar amount, no ratio. Ratio mode: the leader
+        // multiplier drives sizing and copy_size_usd is ignored by the engine.
+        let (copy_size_usd, copy_ratio) = if m.use_ratio {
+            (Decimal::ZERO, Some(sizing))
+        } else {
+            (sizing, None)
+        };
         let mirror_sells = m.mirror_sells;
-        let id = self.unique_copy_id(&nickname, &wallet);
+        let edit_id = m.edit_id.clone();
+        // Editing keeps the follower's id and its enabled/paper state; a new
+        // follow gets a fresh id and mirrors in whichever mode this TUI shows.
+        let existing = edit_id
+            .as_deref()
+            .and_then(|id| self.copy_engine.config(id));
+        let id = match &edit_id {
+            Some(id) => id.clone(),
+            None => self.unique_copy_id(&nickname, &wallet),
+        };
         let cfg = CopyTrader {
             id: id.clone(),
             wallet,
             nickname: nickname.clone(),
-            copy_size_usd: size,
-            // IMPORTANT NOTE: TUI follow-form is fixed-dollar only; proportional
-            // sizing (copy_ratio) is CLI-only for now. Add a modal field if TUI
-            // users ask for it.
-            copy_ratio: None,
+            copy_size_usd,
+            copy_ratio,
             max_dollar_cap: max_dollar,
             price_min: min_price,
             price_max: max_price,
             slippage_pct: slippage,
             mirror_sells,
-            enabled: true,
-            // New followers mirror in whichever mode this TUI is showing.
-            paper: !self.live,
+            enabled: existing.as_ref().is_none_or(|c| c.enabled),
+            paper: existing.as_ref().map_or(!self.live, |c| c.paper),
         };
-        match self.copy_engine.add(cfg) {
+        let res = if edit_id.is_some() {
+            self.copy_engine.update(&id, cfg)
+        } else {
+            self.copy_engine.add(cfg)
+        };
+        match res {
             Ok(()) => {
-                let _ = self.copy_engine.start(&id);
-                self.status = format!("Following '{nickname}' as '{id}' (running).");
+                if edit_id.is_none() {
+                    let _ = self.copy_engine.start(&id);
+                    self.status = format!("Following '{nickname}' as '{id}' (running).");
+                } else {
+                    self.status = format!("Reconfigured '{id}'.");
+                }
                 self.copy_modal = None;
             }
             Err(e) => self.set_copy_error(&e.to_string()),
+        }
+    }
+
+    /// Open the follow form pre-filled from the selected follower (edit mode).
+    fn open_copy_edit(&mut self) {
+        let snap = self.copy_engine.snapshot();
+        let Some(s) = snap.get(self.copytrade_sel) else {
+            self.status = "No follower selected.".into();
+            return;
+        };
+        match self.copy_engine.config(&s.id) {
+            Some(cfg) => self.copy_modal = Some(CopyModal::from_trader(&cfg)),
+            None => self.status = "Follower not found.".into(),
         }
     }
 
@@ -2640,6 +2740,49 @@ mod tests {
     #[test]
     fn plain_queries_pass_through() {
         assert_eq!(normalize_search_query("bitcoin etf"), "bitcoin etf");
+    }
+
+    #[test]
+    fn copy_form_swaps_sizing_field_without_changing_length() {
+        // `focus` indexes into fields(); both modes must stay the same length or
+        // the cursor could point past the end after a mode toggle.
+        let mut m = CopyModal::default();
+        assert!(m.fields().contains(&CopyField::Size));
+        assert!(!m.fields().contains(&CopyField::Ratio));
+        let fixed_len = m.fields().len();
+        m.use_ratio = true;
+        assert!(m.fields().contains(&CopyField::Ratio));
+        assert!(!m.fields().contains(&CopyField::Size));
+        assert_eq!(m.fields().len(), fixed_len);
+    }
+
+    #[test]
+    fn edit_form_reflects_existing_sizing_mode() {
+        use rust_decimal_macros::dec;
+        let mut cfg = CopyTrader {
+            id: "alice".into(),
+            wallet: "0x0000000000000000000000000000000000000001".into(),
+            nickname: "alice".into(),
+            copy_size_usd: dec!(25),
+            copy_ratio: None,
+            max_dollar_cap: dec!(100),
+            price_min: dec!(0),
+            price_max: dec!(1),
+            slippage_pct: dec!(2),
+            mirror_sells: true,
+            enabled: true,
+            paper: true,
+        };
+        // Fixed follower opens in fixed mode with its dollar size.
+        let m = CopyModal::from_trader(&cfg);
+        assert_eq!(m.edit_id.as_deref(), Some("alice"));
+        assert!(!m.use_ratio);
+        assert_eq!(m.size, "25");
+        // A ratio follower opens in ratio mode showing the multiplier.
+        cfg.copy_ratio = Some(dec!(0.1));
+        let m = CopyModal::from_trader(&cfg);
+        assert!(m.use_ratio);
+        assert_eq!(m.ratio, "0.1");
     }
 
     #[test]

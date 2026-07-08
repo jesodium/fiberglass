@@ -13,8 +13,8 @@ use ratatui::widgets::{
 };
 
 use super::app::{
-    App, COPY_FIELDS, CopyField, CopyModal, LogoutModal, ModalField, OnboardingState, OrderModal,
-    ResetModal, SETTING_ROWS, SettingRow, SettingsEditModal, UpdateModal, View, WalletAction,
+    App, CopyField, CopyModal, LogoutModal, ModalField, OnboardingState, OrderModal, ResetModal,
+    SETTING_ROWS, SettingRow, SettingsEditModal, UpdateModal, View, WalletAction,
     WalletActionModal,
 };
 use super::data::ResolutionInfo;
@@ -256,7 +256,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         View::Portfolio => "↑↓ move · / filter · o sort col · O reverse · Tab views",
         View::History => "↑↓ scroll · / filter · Esc clear · Tab views",
         View::Copytrade => {
-            "n follow · s start · x stop · e enable · d disable · D unfollow · ↑↓ move"
+            "n follow · c configure · s start · x stop · e enable · d disable · D unfollow · ↑↓ move"
         }
         View::Settings => {
             "↑↓ move · Enter edit/cycle · w reveal key · m import · o browser · a approve · c check · d deposit · Shift+L reset paper · Tab views"
@@ -1569,7 +1569,7 @@ fn copytrade(f: &mut Frame, app: &App, area: Rect) {
         "Last Action",
     ]))
     .block(panel(&format!(
-        "Copy Trading — {}s poll (n follow · s start · x stop · e enable · d disable · D unfollow)",
+        "Copy Trading — {}s poll (n follow · c configure · s start · x stop · e enable · d disable · D unfollow)",
         app.copy_engine.interval()
     )))
     .row_highlight_style(highlight())
@@ -2509,7 +2509,9 @@ fn render_copy_modal(f: &mut Frame, m: &CopyModal) {
         match field {
             CopyField::Wallet => m.wallet.clone(),
             CopyField::Nickname => m.nickname.clone(),
+            CopyField::Mode => if m.use_ratio { "ratio" } else { "fixed" }.to_string(),
             CopyField::Size => m.size.clone(),
+            CopyField::Ratio => m.ratio.clone(),
             CopyField::MaxDollar => m.max_dollar.clone(),
             CopyField::MinPrice => m.min_price.clone(),
             CopyField::MaxPrice => m.max_price.clone(),
@@ -2518,18 +2520,25 @@ fn render_copy_modal(f: &mut Frame, m: &CopyModal) {
         }
     };
     let mut lines: Vec<Line> = Vec::new();
-    for (i, field) in COPY_FIELDS.iter().enumerate() {
+    for (i, field) in m.fields().iter().enumerate() {
         lines.push(field_line(field.label(), &value(*field), m.focus == i));
     }
     lines.push(Line::from(""));
     lines.push(match &m.error {
         Some(e) => Line::from(Span::styled(format!("✗ {e}"), Style::default().fg(BAD))),
-        None => Line::from("Mirrors the wallet's new trades with your own size.".fg(DIM)),
+        None => Line::from(
+            "Fixed = flat $ per copy · Ratio = leader size × ratio, both capped by max.".fg(DIM),
+        ),
     });
+    let (title, verb) = if m.edit_id.is_some() {
+        ("CONFIGURE FOLLOWER", "save")
+    } else {
+        ("FOLLOW WALLET", "follow")
+    };
     lines.push(Line::from(
-        "↑↓ move · space toggles mirror · Enter follow · Esc cancel".fg(DIM),
+        format!("↑↓ move · space/←→ toggles · Enter {verb} · Esc cancel").fg(DIM),
     ));
-    popup(f, 60, "FOLLOW WALLET", ACCENT, lines);
+    popup(f, 60, title, ACCENT, lines);
 }
 
 fn render_reset_modal(f: &mut Frame, m: &ResetModal) {

@@ -288,6 +288,26 @@ impl CopyEngine {
         self.persist()
     }
 
+    /// The full config for one follower, for pre-filling an edit form.
+    pub fn config(&self, id: &str) -> Option<CopyTrader> {
+        let st = self.state.lock().unwrap();
+        st.traders
+            .iter()
+            .find(|t| t.cfg.id == id)
+            .map(|t| t.cfg.clone())
+    }
+
+    /// Replace a follower's rules (sizing, filters, mirror) in place. The `id` is
+    /// preserved so runtime state (running flag, counters) survives the edit.
+    pub fn update(&self, id: &str, mut cfg: CopyTrader) -> Result<()> {
+        Address::from_str(cfg.wallet.trim())
+            .map_err(|_| anyhow::anyhow!("Invalid wallet address: {}", cfg.wallet))?;
+        cfg.id = id.to_string();
+        self.mutate(id, move |t| t.cfg = cfg)?;
+        self.log(LogLevel::Info, id, "Reconfigured");
+        self.persist()
+    }
+
     pub fn remove(&self, id: &str) -> Result<()> {
         {
             let mut st = self.state.lock().unwrap();
@@ -365,6 +385,19 @@ impl CopyEngine {
         self.state.lock().unwrap().scope = Some(paper);
     }
 
+    /// Merge the on-disk roster into memory so follows/unfollows/reconfigures
+    /// from other windows (or the CLI) show up here. Each follower's per-process
+    /// runtime state (running flag, counters, dedup cursor) is preserved by id;
+    /// only the config is refreshed. New followers arrive stopped — every window
+    /// decides for itself whether to run them, so no double-mirroring.
+    fn reload_roster(&self) {
+        let Ok(book) = super::config::load() else {
+            return; // transient read/parse error: keep the current roster
+        };
+        let mut st = self.state.lock().unwrap();
+        merge_disk_roster(&mut st.traders, book);
+    }
+
     fn mutate(&self, id: &str, f: impl FnOnce(&mut TraderState)) -> Result<()> {
         let mut st = self.state.lock().unwrap();
         let t = st
@@ -434,6 +467,9 @@ impl CopyEngine {
     /// mirror anything that passes the rules. Safe to call with nothing
     /// running (it just advances the heartbeat).
     pub async fn poll(&self) -> Result<()> {
+        // Pick up roster/config edits made by other windows or the CLI. Runtime
+        // state (running flag, counters) is per-process and stays put.
+        self.reload_roster();
         // Snapshot the work to do without holding the lock across awaits.
         let jobs: Vec<(String, CopyTrader, bool, i64)> = {
             let st = self.state.lock().unwrap();
@@ -698,6 +734,32 @@ impl CopyEngine {
     }
 }
 
+/// Reconcile the in-memory roster with the on-disk `book`: drop followers no
+/// longer on disk, refresh configs that changed, and add ones created elsewhere
+/// (stopped). Per-follower runtime state (running flag, counters, dedup cursor)
+/// is matched by id and preserved.
+fn merge_disk_roster(traders: &mut Vec<TraderState>, book: CopyBook) {
+    let disk_ids: std::collections::HashSet<String> =
+        book.traders.iter().map(|t| t.id.clone()).collect();
+    traders.retain(|t| disk_ids.contains(&t.cfg.id));
+    for cfg in book.traders {
+        match traders.iter_mut().find(|t| t.cfg.id == cfg.id) {
+            Some(t) => t.cfg = cfg,
+            None => traders.push(TraderState {
+                cfg,
+                running: false,
+                primed: false,
+                last_seen_ts: 0,
+                copied: 0,
+                skipped: 0,
+                errors: 0,
+                last_action: None,
+                last_action_at: None,
+            }),
+        }
+    }
+}
+
 /// Pull the actionable fields out of a Data-API activity, if present.
 fn to_trade_event(a: &Activity) -> Option<TradeEvent> {
     if a.activity_type != ActivityType::Trade {
@@ -786,6 +848,54 @@ mod tests {
             price,
             usdc_size: dec!(100),
         }
+    }
+
+    fn running_state(cfg: CopyTrader) -> TraderState {
+        TraderState {
+            cfg,
+            running: true,
+            primed: true,
+            last_seen_ts: 42,
+            copied: 3,
+            skipped: 1,
+            errors: 0,
+            last_action: None,
+            last_action_at: None,
+        }
+    }
+
+    #[test]
+    fn merge_preserves_runtime_state_and_syncs_config() {
+        // In memory: one follower, running, with a fixed size.
+        let mut traders = vec![running_state(trader())];
+
+        // On disk (edited by another window): same follower switched to ratio,
+        // plus a brand-new follower, and no others.
+        let mut edited = trader();
+        edited.copy_ratio = Some(dec!(0.1));
+        let mut newcomer = trader();
+        newcomer.id = "shrimp".into();
+        let book = CopyBook {
+            traders: vec![edited, newcomer],
+        };
+
+        merge_disk_roster(&mut traders, book);
+
+        assert_eq!(traders.len(), 2);
+        let whale = traders.iter().find(|t| t.cfg.id == "whale").unwrap();
+        assert_eq!(whale.cfg.copy_ratio, Some(dec!(0.1))); // config synced
+        assert!(whale.running); // runtime preserved
+        assert_eq!(whale.copied, 3);
+        assert_eq!(whale.last_seen_ts, 42);
+        let shrimp = traders.iter().find(|t| t.cfg.id == "shrimp").unwrap();
+        assert!(!shrimp.running); // new followers arrive stopped
+    }
+
+    #[test]
+    fn merge_drops_followers_removed_on_disk() {
+        let mut traders = vec![running_state(trader())];
+        merge_disk_roster(&mut traders, CopyBook::default());
+        assert!(traders.is_empty());
     }
 
     #[test]
