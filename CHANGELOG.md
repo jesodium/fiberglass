@@ -10,6 +10,19 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+## [0.1.21] - 2026-07-08
+
+### added
+- copytrade: `c` in the tui reconfigures the selected follower; the modal
+  pre-fills the existing rule and preserves its id, enabled, and paper flags.
+- copytrade: sizing-mode toggle in the follow/edit form, switch between fixed
+  dollar size and ratio (leader size x ratio).
+
+### changed
+- copytrade: the engine reloads the roster on every poll, so follows and edits
+  made from another window or the cli sync in live, with per-follower runtime
+  state preserved by id.
+
 ## [0.1.20] - 2026-07-07
 
 ### added
