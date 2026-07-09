@@ -2742,6 +2742,54 @@ mod tests {
         assert_eq!(normalize_search_query("bitcoin etf"), "bitcoin etf");
     }
 
+    fn paper_app() -> App {
+        use rust_decimal_macros::dec;
+        let data = std::sync::Arc::new(std::sync::Mutex::new(super::super::data::SharedData::default()));
+        let account = std::sync::Arc::new(std::sync::Mutex::new(PaperAccount::new(dec!(1000), false)));
+        let copy_engine = crate::copytrade::engine::CopyEngine::new(account.clone(), 15);
+        App::new(data, account, copy_engine, false)
+    }
+
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn u_opens_update_modal_only_when_update_available() {
+        let mut app = paper_app();
+        // No update pending: U is a no-op.
+        app.update_available = None;
+        app.on_key(press('U'));
+        assert!(app.update_modal.is_none());
+
+        // Update pending: U opens the confirm modal carrying the tag.
+        app.update_available = Some("v9.9.9".into());
+        app.on_key(press('U'));
+        let m = app.update_modal.as_ref().expect("modal should open");
+        assert_eq!(m.tag, "v9.9.9");
+        assert!(m.confirm);
+        assert!(!app.run_upgrade);
+    }
+
+    #[test]
+    fn update_modal_yes_starts_upgrade_no_cancels() {
+        let mut app = paper_app();
+        app.update_available = Some("v9.9.9".into());
+
+        // 'n' dismisses without upgrading.
+        app.on_key(press('U'));
+        app.on_key(press('n'));
+        assert!(app.update_modal.is_none());
+        assert!(!app.run_upgrade);
+
+        // 'y' confirms: modal closes, upgrade flagged, TUI quits.
+        app.on_key(press('U'));
+        app.on_key(press('y'));
+        assert!(app.update_modal.is_none());
+        assert!(app.run_upgrade);
+        assert!(app.should_quit);
+    }
+
     #[test]
     fn copy_form_swaps_sizing_field_without_changing_length() {
         // `focus` indexes into fields(); both modes must stay the same length or
