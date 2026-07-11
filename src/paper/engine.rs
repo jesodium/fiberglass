@@ -530,9 +530,19 @@ pub(crate) fn compute_stats(account: &PaperAccount) -> Stats {
         })
         .collect();
 
-    let dd_series: Vec<f64> = equity_curve
-        .iter()
-        .map(|&(_, e)| f64::try_from(e).unwrap_or(0.0))
+    // Drawdown needs intraday resolution: daily buckets collapse a whole
+    // session into one point, so a mid-day -$425 round nets to zero DD.
+    // Walk closed trades in time order, accruing realized PnL after each.
+    // IMPORTANT NOTE: realized-only equity — historical position marks aren't
+    // stored, so open-position swings aren't captured. Fine for realized DD.
+    let mut sorted = closed.clone();
+    sorted.sort_by_key(|t| t.timestamp);
+    let mut running = account.initial_balance;
+    let dd_series: Vec<f64> = std::iter::once(f64::try_from(running).unwrap_or(0.0))
+        .chain(sorted.iter().map(|t| {
+            running += t.realized_pnl.unwrap_or_default();
+            f64::try_from(running).unwrap_or(0.0)
+        }))
         .collect();
 
     Stats {
@@ -1068,6 +1078,34 @@ mod tests {
         assert_eq!(stats.worst_trade.unwrap().realized_pnl, Some(dec!(-10)));
         assert_eq!(stats.daily_pnl.len(), 1);
         assert_eq!(stats.equity_curve.last().unwrap().1, dec!(10_000));
+    }
+
+    #[test]
+    fn intraday_drawdown_survives_daily_bucketing() {
+        // All trades same day: buy, lose 20, then recover 30. Net +$10 but a
+        // peak-to-trough of $20 on a $10k base = 0.20% DD. Daily buckets would
+        // collapse this to a single point and report 0.
+        let mut acct = account();
+        let asks = [(dec!(0.50), dec!(10_000))];
+        let bids = [(dec!(0.48), dec!(10_000))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(200), now()).unwrap();
+        // Sell 200 at 0.40: -$20 (buy cost 0.50).
+        let bids = [(dec!(0.40), dec!(10_000))];
+        market_sell(&mut acct, TOKEN, &bids, dec!(80), now()).unwrap();
+        // Re-buy and sell at a profit later same day: +$30.
+        let asks = [(dec!(0.50), dec!(10_000))];
+        let bids = [(dec!(0.48), dec!(10_000))];
+        market_buy(&mut acct, TOKEN, &meta(), &asks, &bids, dec!(200), now()).unwrap();
+        let bids = [(dec!(0.65), dec!(10_000))];
+        market_sell(&mut acct, TOKEN, &bids, dec!(200), now()).unwrap();
+
+        let stats = compute_stats(&acct);
+        assert_eq!(stats.daily_pnl.len(), 1);
+        assert!(
+            stats.max_drawdown_pct.unwrap() > dec!(0),
+            "expected non-zero intraday drawdown, got {:?}",
+            stats.max_drawdown_pct
+        );
     }
 
     #[test]

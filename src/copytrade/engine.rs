@@ -584,6 +584,17 @@ impl CopyEngine {
     async fn execute(&self, id: &str, cfg: &CopyTrader, action: CopyAction) {
         match ExecutionMode::from_paper(cfg.paper) {
             ExecutionMode::Live => {
+                // Same slippage guard the paper path enforces: real funds get at
+                // least as much price protection as the simulator.
+                if let Err(e) = self.check_live_slippage(cfg, &action).await {
+                    self.bump_error(id);
+                    self.log(
+                        LogLevel::Warn,
+                        id,
+                        &format!("{} rejected: {e}", describe_action(&action)),
+                    );
+                    return;
+                }
                 let order = match &action {
                     CopyAction::Buy { token_id, usd } => crate::trade::LiveOrder::Market {
                         token_id: token_id.clone(),
@@ -616,6 +627,24 @@ impl CopyEngine {
                         &format!("{} rejected: {e}", describe_action(&action)),
                     );
                 }
+            }
+        }
+    }
+
+    /// Pre-trade slippage guard for the live path: fetch the current book and
+    /// reject if walking it drifts past `cfg.slippage_pct` from the touch.
+    async fn check_live_slippage(&self, cfg: &CopyTrader, action: &CopyAction) -> Result<()> {
+        let client = crate::auth::unauthenticated_clob_client()?;
+        match action {
+            CopyAction::Buy { token_id, usd } => {
+                let token = quotes::parse_token_id(token_id)?;
+                let book = quotes::fetch_book(&client, token).await?;
+                paper_engine::check_slippage(&book.asks, TradeSide::Buy, *usd, cfg.slippage_pct)
+            }
+            CopyAction::Sell { token_id, shares } => {
+                let token = quotes::parse_token_id(token_id)?;
+                let book = quotes::fetch_book(&client, token).await?;
+                paper_engine::check_slippage(&book.bids, TradeSide::Sell, *shares, cfg.slippage_pct)
             }
         }
     }
