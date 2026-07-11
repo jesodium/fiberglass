@@ -103,6 +103,9 @@ pub(crate) struct Settings {
     /// caches activity ~15s at the edge, so smaller values mainly cut detection
     /// latency rather than fetch fresher data. Floored at 1.
     pub copy_poll_secs: u64,
+    /// When true, the TUI shows a horizontal tab bar across the top instead of
+    /// the left sidebar rail.
+    pub top_tabs: bool,
 }
 
 impl Default for Settings {
@@ -123,6 +126,7 @@ impl Default for Settings {
             default_trailing_stop_pct: None,
             auto_settle: false,
             copy_poll_secs: 15,
+            top_tabs: false,
         }
     }
 }

@@ -110,19 +110,31 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         render_onboarding(f, o);
         return;
     }
-    // Shell: left sidebar nav | (body over status).
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(20)])
-        .split(f.area());
-
-    render_sidebar(f, app, cols[0]);
-
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(3)])
-        .split(cols[1]);
-    let body = right[0];
+    // Two shells, chosen in Settings: a top tab bar over the body, or a left
+    // sidebar rail beside it. Both keep the status line at the bottom.
+    let (body, status_area) = if app.settings.top_tabs {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(5),
+                Constraint::Length(3),
+            ])
+            .split(f.area());
+        render_top_tabs(f, app, rows[0]);
+        (rows[1], rows[2])
+    } else {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(22), Constraint::Min(20)])
+            .split(f.area());
+        render_sidebar(f, app, cols[0]);
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(5), Constraint::Length(3)])
+            .split(cols[1]);
+        (right[0], right[1])
+    };
 
     match app.view {
         View::Onboarding => {} // handled by early return above
@@ -137,7 +149,7 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         View::Logs => logs(f, app, body),
         View::Settings => settings(f, app, body),
     }
-    render_status(f, app, right[1]);
+    render_status(f, app, status_area);
 
     if let Some(modal) = &app.modal {
         render_modal(f, app, modal);
@@ -162,6 +174,76 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
     }
 }
 
+/// Top navigation bar: mode badge, the 1-9 tabs inline with the active one
+/// highlighted, and a live connection dot on the right.
+fn render_top_tabs(f: &mut Frame, app: &App, area: Rect) {
+    let mc = mode_color(app);
+    let badge_bg = lerp(mc, Color::Rgb(255, 255, 255), pulse(app.frame) * 0.45);
+
+    let mut spans = vec![
+        Span::styled(
+            format!(" {} ", mode_label(app).trim()),
+            Style::default().fg(Color::Black).bg(badge_bg).bold(),
+        ),
+        Span::raw(" "),
+    ];
+    for (i, v) in View::TABS.iter().enumerate() {
+        let active = *v == app.view || (app.view == View::MarketDetail && *v == View::Markets);
+        let label = format!(" {} {} ", i + 1, v.title());
+        if active {
+            let bg = lerp(SELECT_BG, ACCENT, pulse(app.frame) * 0.45);
+            spans.push(Span::styled(
+                label,
+                Style::default().fg(Color::White).bg(bg).bold(),
+            ));
+        } else {
+            spans.push(Span::styled(label, Style::default().fg(DIM)));
+        }
+    }
+
+    let d = app.data.lock().unwrap();
+    let connected = d.connected;
+    drop(d);
+    let dot = if !connected {
+        Span::styled(
+            format!(" {} offline ", spinner(app.frame)),
+            Style::default().fg(GOLD),
+        )
+    } else if data_loading(app) {
+        Span::styled(
+            format!(" {} syncing ", spinner(app.frame)),
+            Style::default().fg(ACCENT),
+        )
+    } else {
+        Span::styled(
+            " ● connected ",
+            Style::default().fg(lerp(Color::Rgb(20, 70, 35), GOOD, pulse(app.frame))),
+        )
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(mc))
+        .title(Span::styled(
+            " ◈ FIBERGLASS ",
+            Style::default().fg(mc).bold(),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Tabs on the left, connection dot right-aligned.
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(10), Constraint::Length(14)])
+        .split(inner);
+    f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+    f.render_widget(
+        Paragraph::new(Line::from(dot)).alignment(Alignment::Right),
+        cols[1],
+    );
+}
+
 /// Left navigation rail: mode badge, the view list with an active-item bar,
 /// and a live connection footer.
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -178,27 +260,28 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
     ];
 
-    for (i, v) in View::TABS.iter().enumerate() {
-        let active = *v == app.view || (app.view == View::MarketDetail && *v == View::Markets);
-        let label = format!(" {} {}", i + 1, v.title());
+    // One nav row per 1-9 tab.
+    let nav_line = |label: String, active: bool| -> Line {
         if active {
             // Breathing fill + glowing edge bar, instead of a flat blue block.
             let p = pulse(app.frame);
             let bg = lerp(SELECT_BG, ACCENT, p * 0.45);
             let bar = lerp(ACCENT, Color::White, p);
-            lines.push(Line::from(vec![
+            Line::from(vec![
                 Span::styled("█", Style::default().fg(bar)),
                 Span::styled(
                     format!("{label:<width$}", width = W - 1),
                     Style::default().fg(Color::White).bg(bg).bold(),
                 ),
-            ]));
+            ])
         } else {
-            lines.push(Line::from(Span::styled(
-                format!(" {label}"),
-                Style::default().fg(DIM),
-            )));
+            Line::from(Span::styled(format!(" {label}"), Style::default().fg(DIM)))
         }
+    };
+
+    for (i, v) in View::TABS.iter().enumerate() {
+        let active = *v == app.view || (app.view == View::MarketDetail && *v == View::Markets);
+        lines.push(nav_line(format!(" {} {}", i + 1, v.title()), active));
     }
 
     // Push the footer to the bottom of the rail.
@@ -288,6 +371,9 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 
 // --- Dashboard -------------------------------------------------------------
 
+/// All-in-one overview: KPI cards over three live columns — account stats +
+/// copytraders, holdings + open orders, and recent history. Numbers are read
+/// from shared state each frame.
 fn dashboard(f: &mut Frame, app: &App, area: Rect) {
     let marks = marks_snapshot(app);
     let loading = data_loading(app);
@@ -296,23 +382,19 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
     let daily = daily_pnl(&acct);
     let stats = trade_stats(&acct);
     let equity_stats = equity_metrics(&acct.equity_curve);
-    let recent: Vec<_> = acct.trades.iter().rev().take(8).cloned().collect();
-    let positions = acct.positions.len();
-    let open_orders = acct.open_orders.len();
+    let recent: Vec<Trade> = acct.trades.iter().rev().take(20).cloned().collect();
     drop(acct);
-    let following = app.copy_engine.running_count();
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(7), Constraint::Min(5)])
         .split(area);
 
-    // Metric cards.
+    // KPI cards.
     let cards = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 4); 4])
+        .constraints([Constraint::Ratio(1, 5); 5])
         .split(rows[0]);
-
     metric_card(
         f,
         cards[0],
@@ -336,30 +418,39 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
         &loading_signed(total, loading),
         if loading { DIM } else { pnl_color(total) },
     );
+    metric_card(
+        f,
+        cards[4],
+        "ROI",
+        &if loading {
+            loading_anim()
+        } else {
+            format!("{}%", view.roi_pct)
+        },
+        if loading {
+            DIM
+        } else {
+            pnl_color(view.roi_pct)
+        },
+    );
 
-    // Bottom: counters + recent trades.
-    let bottom = Layout::default()
+    // Three columns: [account + copytraders] | [holdings + orders] | [history].
+    let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
+        .constraints([
+            Constraint::Percentage(28),
+            Constraint::Percentage(40),
+            Constraint::Percentage(32),
+        ])
         .split(rows[1]);
 
+    // Col A: account stats over copytraders.
+    let col_a = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(cols[0]);
+
     let mut info = vec![
-        kv_line("Open Positions", &positions.to_string()),
-        kv_line("Open Orders", &open_orders.to_string()),
-        kv_line("Copy Followers", &following.to_string()),
-        kv_colored(
-            "ROI",
-            &if loading {
-                loading_anim()
-            } else {
-                format!("{}%", view.roi_pct)
-            },
-            if loading {
-                DIM
-            } else {
-                pnl_color(view.roi_pct)
-            },
-        ),
         kv_colored(
             "Realized PnL",
             &signed_money(view.realized_pnl),
@@ -398,8 +489,6 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
             pnl_color(stats.expectancy),
         ),
     ];
-    // Only shown once equity snapshots have accumulated (hidden for accounts
-    // predating equity snapshotting).
     if let Some(eq) = &equity_stats {
         if let Some(sh) = eq.sharpe {
             info.push(kv_line("Sharpe", &sh.to_string()));
@@ -408,36 +497,178 @@ fn dashboard(f: &mut Frame, app: &App, area: Rect) {
             info.push(kv_line("Max Drawdown", &format!("{dd}%")));
         }
     }
-    let p = Paragraph::new(info)
-        .block(panel("Account"))
-        .wrap(Wrap { trim: true });
-    f.render_widget(p, bottom[0]);
+    f.render_widget(
+        Paragraph::new(info)
+            .block(panel("Account"))
+            .wrap(Wrap { trim: true }),
+        col_a[0],
+    );
 
-    let trade_rows: Vec<Row> = recent
+    let snap = app.copy_engine.snapshot();
+    let copy_rows: Vec<Row> = snap
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, s)| {
+            let (state, color) = if s.running {
+                ("● run", GOOD)
+            } else if s.enabled {
+                ("○ idle", GOLD)
+            } else {
+                ("· off", DIM)
+            };
             Row::new(vec![
-                Cell::from(t.timestamp.format("%H:%M:%S").to_string()),
-                side_cell(t.side),
-                Cell::from(truncate(&t.question, 30)),
-                Cell::from(t.size.round_dp(1).to_string()),
-                Cell::from(format!("{:.3}", t.price)),
+                Cell::from(truncate(&s.nickname, 14)),
+                Cell::from(state).style(Style::default().fg(color)),
+                Cell::from(s.copied.to_string()),
             ])
+            .style(zebra(i))
         })
         .collect();
-    let table = Table::new(
-        trade_rows,
+    let copy_table = Table::new(
+        copy_rows,
         [
-            Constraint::Length(9),
-            Constraint::Length(5),
-            Constraint::Min(20),
-            Constraint::Length(8),
+            Constraint::Min(10),
             Constraint::Length(7),
+            Constraint::Length(6),
         ],
     )
-    .header(header_row(&["Time", "Side", "Market", "Size", "Price"]))
-    .block(panel("Recent Trades"));
-    f.render_widget(table, bottom[1]);
+    .header(header_row(&["Trader", "State", "Copied"]))
+    .block(panel(&format!("Copytraders ({})", snap.len())));
+    f.render_widget(copy_table, col_a[1]);
+
+    // Col B: holdings over open orders.
+    let col_b = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(cols[1]);
+
+    let (open, _resolved) = app.ordered_positions();
+    let hold_rows: Vec<Row> = open
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let upnl = p.unrealized_pnl.unwrap_or_default();
+            Row::new(vec![
+                Cell::from(truncate(&p.position.question, 24)),
+                Cell::from(truncate(&p.position.outcome, 5)),
+                Cell::from(p.position.size.round_dp(1).to_string()),
+                Cell::from(format!("{:.2}", p.position.avg_price)),
+                Cell::from(match p.mark_price {
+                    Some(m) => format!("{m:.2}"),
+                    None => "-".into(),
+                }),
+                Cell::from(signed_money(upnl)).style(Style::default().fg(pnl_color(upnl))),
+            ])
+            .style(zebra(i))
+        })
+        .collect();
+    let hold_table = Table::new(
+        hold_rows,
+        [
+            Constraint::Min(14),
+            Constraint::Length(5),
+            Constraint::Length(7),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Length(10),
+        ],
+    )
+    .header(header_row(&[
+        "Market", "Out", "Shares", "Avg", "Mark", "uPnL",
+    ]))
+    .block(panel(&format!("Holdings ({})", open.len())));
+    f.render_widget(hold_table, col_b[0]);
+
+    if app.live {
+        let orders = app.ordered_live_orders();
+        let order_rows: Vec<Row> = orders
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                Row::new(vec![
+                    Cell::from(o.side.to_uppercase()).style(Style::default().fg(
+                        if o.side.eq_ignore_ascii_case("buy") {
+                            GOOD
+                        } else {
+                            BAD
+                        },
+                    )),
+                    Cell::from(truncate(&o.outcome, 6)),
+                    Cell::from(o.price.clone()),
+                    Cell::from(o.size.clone()),
+                ])
+                .style(zebra(i))
+            })
+            .collect();
+        let order_table = Table::new(
+            order_rows,
+            [
+                Constraint::Length(5),
+                Constraint::Min(8),
+                Constraint::Length(7),
+                Constraint::Length(8),
+            ],
+        )
+        .header(header_row(&["Side", "Out", "Price", "Size"]))
+        .block(panel(&format!("Open Orders ({})", orders.len())));
+        f.render_widget(order_table, col_b[1]);
+    } else {
+        let orders = app.ordered_paper_orders();
+        let order_rows: Vec<Row> = orders
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                Row::new(vec![
+                    side_cell(o.side),
+                    Cell::from(truncate(&o.question, 16)),
+                    Cell::from(truncate(&o.outcome, 5)),
+                    Cell::from(format!("{:.2}", o.price)),
+                    Cell::from(o.size.round_dp(1).to_string()),
+                ])
+                .style(zebra(i))
+            })
+            .collect();
+        let order_table = Table::new(
+            order_rows,
+            [
+                Constraint::Length(5),
+                Constraint::Min(10),
+                Constraint::Length(5),
+                Constraint::Length(6),
+                Constraint::Length(7),
+            ],
+        )
+        .header(header_row(&["Side", "Market", "Out", "Price", "Size"]))
+        .block(panel(&format!("Open Orders ({})", orders.len())));
+        f.render_widget(order_table, col_b[1]);
+    }
+
+    // Col C: recent history.
+    let hist_rows: Vec<Row> = recent
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            Row::new(vec![
+                Cell::from(t.timestamp.format("%m-%d %H:%M").to_string()),
+                side_cell(t.side),
+                Cell::from(truncate(&t.question, 20)),
+                Cell::from(format!("{:.2}", t.price)),
+            ])
+            .style(zebra(i))
+        })
+        .collect();
+    let hist_table = Table::new(
+        hist_rows,
+        [
+            Constraint::Length(11),
+            Constraint::Length(5),
+            Constraint::Min(14),
+            Constraint::Length(6),
+        ],
+    )
+    .header(header_row(&["Time", "Side", "Market", "Price"]))
+    .block(panel("Recent History"));
+    f.render_widget(hist_table, cols[2]);
 }
 
 // --- Markets ---------------------------------------------------------------
@@ -1878,6 +2109,14 @@ fn render_trading_settings(f: &mut Frame, app: &App, area: Rect) {
                         "On — starts with macOS".to_string()
                     } else {
                         "Off — starts with TUI/commands only".to_string()
+                    },
+                ),
+                SettingRow::TopTabs => (
+                    "Navigation",
+                    if s.top_tabs {
+                        "Top tab bar".to_string()
+                    } else {
+                        "Left sidebar".to_string()
                     },
                 ),
                 SettingRow::Field(field) => {

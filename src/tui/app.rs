@@ -151,6 +151,8 @@ pub(crate) enum SettingRow {
     AutoSettle,
     /// Toggle: start the background guard worker at login (macOS LaunchAgent).
     GuardAutostart,
+    /// Toggle: top tab bar vs left sidebar nav.
+    TopTabs,
     Field(SettingField),
 }
 
@@ -252,10 +254,11 @@ fn sort_live_orders(list: &mut [LiveOpenOrder], col: usize, asc: bool) {
     });
 }
 
-pub(crate) const SETTING_ROWS: [SettingRow; 11] = [
+pub(crate) const SETTING_ROWS: [SettingRow; 12] = [
     SettingRow::Mode,
     SettingRow::AutoSettle,
     SettingRow::GuardAutostart,
+    SettingRow::TopTabs,
     SettingRow::Field(SettingField::Threshold),
     SettingRow::Field(SettingField::Quickbuy),
     SettingRow::Field(SettingField::Quicksell),
@@ -1057,11 +1060,17 @@ impl App {
         }
     }
 
+    /// Tab cycle order for Tab/BackTab and the sidebar: the fixed 1-9 tabs.
+    pub(crate) fn tab_order(&self) -> Vec<View> {
+        View::TABS.to_vec()
+    }
+
     fn cycle_tab(&mut self, dir: i32) {
-        let cur = View::TABS.iter().position(|v| *v == self.view).unwrap_or(0);
-        let n = View::TABS.len() as i32;
+        let tabs = self.tab_order();
+        let cur = tabs.iter().position(|v| *v == self.view).unwrap_or(0);
+        let n = tabs.len() as i32;
         let next = (cur as i32 + dir).rem_euclid(n) as usize;
-        self.view = View::TABS[next];
+        self.view = tabs[next];
         self.reset_table_view();
     }
 
@@ -1205,6 +1214,15 @@ impl App {
                     }
                     Ok(()) => "Guard worker autostart disabled.".into(),
                     Err(e) => format!("Autostart toggle failed: {e}"),
+                };
+            }
+            SettingRow::TopTabs => {
+                self.settings.top_tabs = !self.settings.top_tabs;
+                self.persist_settings();
+                self.status = if self.settings.top_tabs {
+                    "Navigation: top tab bar.".into()
+                } else {
+                    "Navigation: left sidebar.".into()
                 };
             }
             SettingRow::Field(field) => {
@@ -2744,8 +2762,11 @@ mod tests {
 
     fn paper_app() -> App {
         use rust_decimal_macros::dec;
-        let data = std::sync::Arc::new(std::sync::Mutex::new(super::super::data::SharedData::default()));
-        let account = std::sync::Arc::new(std::sync::Mutex::new(PaperAccount::new(dec!(1000), false)));
+        let data = std::sync::Arc::new(std::sync::Mutex::new(
+            super::super::data::SharedData::default(),
+        ));
+        let account =
+            std::sync::Arc::new(std::sync::Mutex::new(PaperAccount::new(dec!(1000), false)));
         let copy_engine = crate::copytrade::engine::CopyEngine::new(account.clone(), 15);
         App::new(data, account, copy_engine, false)
     }
@@ -2788,6 +2809,68 @@ mod tests {
         assert!(app.update_modal.is_none());
         assert!(app.run_upgrade);
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn dashboard_renders_populated_account_without_panic() {
+        use crate::paper::types::{OpenOrder, OrderKind, Position, Trade, TradeSide};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use rust_decimal_macros::dec;
+
+        let mut app = paper_app();
+        {
+            let mut acct = app.account.lock().unwrap();
+            acct.positions.insert(
+                "t1".into(),
+                Position {
+                    token_id: "t1".into(),
+                    question: "Will it rain tomorrow in a very long market name?".into(),
+                    outcome: "Yes".into(),
+                    size: dec!(12.5),
+                    avg_price: dec!(0.42),
+                    realized_pnl: dec!(0),
+                    entry_midpoint: dec!(0.42),
+                },
+            );
+            acct.open_orders.push(OpenOrder {
+                id: 1,
+                created_at: chrono::Utc::now(),
+                token_id: "t1".into(),
+                question: "Will it rain tomorrow?".into(),
+                outcome: "Yes".into(),
+                side: TradeSide::Buy,
+                price: dec!(0.40),
+                size: dec!(5),
+            });
+            acct.trades.push(Trade {
+                id: 1,
+                timestamp: chrono::Utc::now(),
+                token_id: "t1".into(),
+                question: "Will it rain tomorrow?".into(),
+                outcome: "Yes".into(),
+                side: TradeSide::Buy,
+                kind: OrderKind::Market,
+                size: dec!(12.5),
+                price: dec!(0.42),
+                notional: dec!(5.25),
+                realized_pnl: None,
+            });
+        }
+        app.view = View::Dashboard;
+
+        // Render across several frames at a normal and a cramped size, in both
+        // nav layouts — neither shell may panic at any tick or size.
+        for top_tabs in [false, true] {
+            app.settings.top_tabs = top_tabs;
+            for frame in [0u64, 1, 7, 42, 1000] {
+                app.frame = frame;
+                for (w, h) in [(120u16, 32u16), (30, 8)] {
+                    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                    term.draw(|f| crate::tui::ui::render(f, &app)).unwrap();
+                }
+            }
+        }
     }
 
     #[test]

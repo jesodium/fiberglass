@@ -7,6 +7,10 @@ fn polymarket() -> Command {
     let mut cmd = Command::cargo_bin("fiberglass").unwrap();
     cmd.env_remove("POLYMARKET_PRIVATE_KEY");
     cmd.env_remove("POLYMARKET_SIGNATURE_TYPE");
+    // Point the keychain at a throwaway service that has no stored entry, so
+    // commands like `wallet show` read "no entry" (no macOS keychain dialog)
+    // instead of prompting for the real saved key on every test rebuild.
+    cmd.env("POLYMARKET_KEYRING_SERVICE", "fiberglass-test-noprompt");
     cmd
 }
 
