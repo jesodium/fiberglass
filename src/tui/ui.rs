@@ -130,7 +130,7 @@ fn signal_bars(app: &App) -> Vec<Span<'static>> {
     let (connected, lat) = (d.connected, d.net_latency_ms);
     drop(d);
     let (lit, color) = signal_level(connected, lat);
-    ['▂', '▄', '▆', '█']
+    ['▏', '▎', '▍', '▌']
         .iter()
         .enumerate()
         .map(|(i, g)| {
