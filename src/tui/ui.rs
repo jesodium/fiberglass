@@ -103,6 +103,43 @@ fn rgb(c: Color) -> (u8, u8, u8) {
     }
 }
 
+/// Four ascending signal bars (phone-style) coloured by connection health.
+/// Level is derived from the last network round-trip: offline shows a single
+/// red bar; latency buckets fill 1-4 bars from red through gold to green.
+fn signal_level(connected: bool, lat: Option<u64>) -> (usize, Color) {
+    if !connected {
+        return (1, BAD);
+    }
+    let level = match lat {
+        None => 1,
+        Some(ms) if ms <= 150 => 4,
+        Some(ms) if ms <= 350 => 3,
+        Some(ms) if ms <= 700 => 2,
+        Some(_) => 1,
+    };
+    let color = match level {
+        1 => BAD,
+        2 => GOLD,
+        _ => GOOD,
+    };
+    (level, color)
+}
+
+fn signal_bars(app: &App) -> Vec<Span<'static>> {
+    let d = app.data.lock().unwrap();
+    let (connected, lat) = (d.connected, d.net_latency_ms);
+    drop(d);
+    let (lit, color) = signal_level(connected, lat);
+    ['▂', '▄', '▆', '█']
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let c = if i < lit { color } else { DIM };
+            Span::styled(g.to_string(), Style::default().fg(c))
+        })
+        .collect()
+}
+
 pub(crate) fn render(f: &mut Frame, app: &App) {
     FRAME.store(app.frame, std::sync::atomic::Ordering::Relaxed);
     // Onboarding takes over the full screen when no wallet is configured.
@@ -203,22 +240,23 @@ fn render_top_tabs(f: &mut Frame, app: &App, area: Rect) {
 
     let d = app.data.lock().unwrap();
     let connected = d.connected;
+    let latency = d.net_latency_ms;
     drop(d);
+    // Compact glyph only — the coloured signal bars carry the "quality" story.
     let dot = if !connected {
-        Span::styled(
-            format!(" {} offline ", spinner(app.frame)),
-            Style::default().fg(GOLD),
-        )
+        Span::styled(spinner(app.frame).to_string(), Style::default().fg(GOLD))
     } else if data_loading(app) {
-        Span::styled(
-            format!(" {} syncing ", spinner(app.frame)),
-            Style::default().fg(ACCENT),
-        )
+        Span::styled(spinner(app.frame).to_string(), Style::default().fg(ACCENT))
     } else {
         Span::styled(
-            " ● connected ",
+            "●",
             Style::default().fg(lerp(Color::Rgb(20, 70, 35), GOOD, pulse(app.frame))),
         )
+    };
+    // Round-trip time, shown only when we have a live sample.
+    let ms = match (connected, latency) {
+        (true, Some(ms)) => Span::styled(format!("{ms}ms "), Style::default().fg(DIM)),
+        _ => Span::raw(""),
     };
 
     let block = Block::default()
@@ -232,14 +270,18 @@ fn render_top_tabs(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Tabs on the left, connection dot right-aligned.
+    // Tabs on the left, signal bars + latency + status glyph right-aligned.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(10), Constraint::Length(14)])
         .split(inner);
     f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+    let mut right = signal_bars(app);
+    right.push(Span::raw(" "));
+    right.push(ms);
+    right.push(dot);
     f.render_widget(
-        Paragraph::new(Line::from(dot)).alignment(Alignment::Right),
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
         cols[1],
     );
 }
@@ -3243,6 +3285,22 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+
+    #[test]
+    fn latency_buckets_map_to_bars_and_colour() {
+        assert_eq!(signal_level(false, Some(10)), (1, BAD)); // offline wins over latency
+        assert_eq!(signal_level(true, None), (1, BAD)); // no sample yet
+        assert_eq!(signal_level(true, Some(80)), (4, GOOD));
+        assert_eq!(signal_level(true, Some(150)), (4, GOOD)); // bucket edge inclusive
+        assert_eq!(signal_level(true, Some(300)), (3, GOOD));
+        assert_eq!(signal_level(true, Some(500)), (2, GOLD));
+        assert_eq!(signal_level(true, Some(2000)), (1, BAD));
+    }
 }
 
 #[cfg(test)]

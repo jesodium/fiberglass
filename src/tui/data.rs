@@ -99,6 +99,9 @@ pub(crate) struct SharedData {
     pub watch: Vec<String>,
     pub last_refresh: Option<DateTime<Utc>>,
     pub connected: bool,
+    /// Round-trip time (ms) of the most recent network fetch, driving the
+    /// header signal bars. `None` until the first request completes.
+    pub net_latency_ms: Option<u64>,
     /// Transient one-line notices (e.g. live-order results) for the status bar.
     pub notices: Vec<String>,
     /// Open orders at the CLOB (live mode only), refreshed on the slow cadence.
@@ -194,12 +197,16 @@ pub(crate) async fn refresher(
                 dbg += &format!("updated: {}", Utc::now().format("%H:%M:%S"));
                 shared.lock().unwrap().live_debug = dbg;
             }
+            let started = std::time::Instant::now();
             match fetch_markets(&gamma).await {
                 Ok(rows) => {
+                    let ms = started.elapsed().as_millis() as u64;
                     let mut d = shared.lock().unwrap();
                     d.markets_status = format!("{} markets", rows.len());
                     d.markets = rows;
                     d.connected = true;
+                    // Keeps the signal bars alive when nothing is watched.
+                    d.net_latency_ms = Some(ms);
                 }
                 Err(e) => {
                     let mut d = shared.lock().unwrap();
@@ -263,7 +270,7 @@ pub(crate) async fn refresher(
         let watch = shared.lock().unwrap().watch.clone();
 
         let user = live_user;
-        let (live_positions, (books, marks)) = tokio::join!(
+        let (live_positions, (books, marks, book_latency)) = tokio::join!(
             async {
                 if let Some(u) = user {
                     live::fetch_positions(u).await.unwrap_or_default()
@@ -274,6 +281,7 @@ pub(crate) async fn refresher(
             async {
                 let mut books: HashMap<String, BookView> = HashMap::new();
                 let mut marks: HashMap<String, Decimal> = HashMap::new();
+                let mut latency: Option<u64> = None;
                 if !watch.is_empty()
                     && let Ok(client) = crate::auth::unauthenticated_clob_client()
                 {
@@ -284,9 +292,11 @@ pub(crate) async fn refresher(
                             Some(OrderBookSummaryRequest::builder().token_id(token).build())
                         })
                         .collect();
+                    let started = std::time::Instant::now();
                     if !requests.is_empty()
                         && let Ok(responses) = client.order_books(&requests).await
                     {
+                        latency = Some(started.elapsed().as_millis() as u64);
                         for resp in responses {
                             let tid = resp.asset_id.to_string();
                             let mut bids: Vec<(Decimal, Decimal)> =
@@ -318,7 +328,7 @@ pub(crate) async fn refresher(
                         }
                     }
                 }
-                (books, marks)
+                (books, marks, latency)
             },
         );
 
@@ -341,6 +351,9 @@ pub(crate) async fn refresher(
                 if !d.resolutions.contains_key(k) {
                     d.marks.insert(k.clone(), *v);
                 }
+            }
+            if let Some(ms) = book_latency {
+                d.net_latency_ms = Some(ms);
             }
         }
 
