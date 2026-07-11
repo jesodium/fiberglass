@@ -328,15 +328,23 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
     // Push the footer to the bottom of the rail.
     let used = lines.len() as u16 + 2; // + border
-    let pad = area.height.saturating_sub(used + 1);
+    let pad = area.height.saturating_sub(used + 2); // reserve bars + footer rows
     for _ in 0..pad {
         lines.push(Line::from(""));
     }
 
     let d = app.data.lock().unwrap();
     let connected = d.connected;
+    let latency = d.net_latency_ms;
     let markets_status = d.markets_status.clone();
     drop(d);
+    // Signal bars + latency, same as the top-bar header carries.
+    let mut bars_line = vec![Span::raw(" ")];
+    bars_line.extend(signal_bars(app));
+    if let (true, Some(ms)) = (connected, latency) {
+        bars_line.push(Span::styled(format!(" {ms}ms"), Style::default().fg(DIM)));
+    }
+    lines.push(Line::from(bars_line));
     // Footer: heartbeat when live, spinner while data is syncing.
     let loading = data_loading(app);
     let footer = if !connected {
