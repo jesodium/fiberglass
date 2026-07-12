@@ -11,6 +11,10 @@ fn polymarket() -> Command {
     // commands like `wallet show` read "no entry" (no macOS keychain dialog)
     // instead of prompting for the real saved key on every test rebuild.
     cmd.env("POLYMARKET_KEYRING_SERVICE", "fiberglass-test-noprompt");
+    // Never spawn the real detached background worker from tests: it's
+    // non-hermetic, and on Windows it inherits our stdio pipes and hangs the
+    // harness waiting for EOF.
+    cmd.env("POLYMARKET_NO_WORKER", "1");
     cmd
 }
 

@@ -36,6 +36,11 @@ webbrowser = "1.2.1"
 # native and cross builds work without apt.
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 
+[target.'cfg(windows)'.dependencies]
+# Only for SetHandleInformation in guard::spawn_worker — stops the detached
+# worker from inheriting our stdout/stderr pipes (rust-lang/rust#54760).
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Console"] }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

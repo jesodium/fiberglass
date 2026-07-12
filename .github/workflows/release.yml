@@ -32,10 +32,8 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             cross: true
-          # IMPORTANT NOTE: windows-msvc pulled temporarily — Windows CI is
-          # blocked on a Defender-scanning slowdown, ci(windows) fix pending
-          # verification. Add back once confirmed, then cut a windows-only
-          # follow-up build for this same v0.1.17 release.
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
 
     steps:
       - uses: actions/checkout@v4

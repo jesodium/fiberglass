@@ -1,0 +1,24 @@
+name: CI (Windows)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: windows-latest
+    # A hang here once ate 6 hours; fail fast instead.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # fmt is OS-independent and already enforced by the Linux workflow.
+      - run: cargo clippy -- -D warnings
+      - run: cargo test
