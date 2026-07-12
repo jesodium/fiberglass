@@ -190,6 +190,11 @@ fn tui_mode_alive() -> Option<bool> {
 /// Spawn the detached worker if none is alive. Never fails the caller: guard
 /// commands and the TUI must work even if the spawn does not.
 pub(crate) fn ensure_worker(quiet: bool) {
+    // Kill-switch for tests: a real detached worker on the test machine is
+    // both non-hermetic and (on Windows) inherits the harness's stdio pipes.
+    if std::env::var_os("POLYMARKET_NO_WORKER").is_some() {
+        return;
+    }
     if worker_alive().is_some() {
         return;
     }
@@ -243,6 +248,26 @@ fn spawn_worker() -> Result<()> {
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0000_0208); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+        // CreateProcess with bInheritHandles=TRUE leaks every inheritable
+        // handle into the child (rust-lang/rust#54760) — including our own
+        // stdout/stderr when they are pipes. The long-lived worker would hold
+        // those pipes open forever, so whatever is reading us never sees EOF.
+        // Mark our std handles non-inheritable; the worker's stdio is
+        // explicitly redirected above and std re-duplicates handles for any
+        // future Stdio::inherit child, so nothing else needs them inheritable.
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        for std_handle in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            unsafe {
+                let h = GetStdHandle(std_handle);
+                if !h.is_null() && h as isize != -1 {
+                    SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
     }
     cmd.spawn().context("Failed to spawn guard worker")?;
     Ok(())

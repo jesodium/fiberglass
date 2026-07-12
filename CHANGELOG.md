@@ -10,6 +10,17 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+### fixed
+- windows: the detached background worker no longer inherits the parent
+  process's stdout/stderr pipes, which kept pipelines (and the CI test
+  harness) waiting forever for EOF. this was the "windows CI hangs
+  indefinitely" mystery.
+
+### changed
+- ci: windows checks and release builds re-enabled.
+- tests: the integration suite no longer spawns a real background worker on
+  the test machine (`POLYMARKET_NO_WORKER=1`).
+
 ## [0.1.22] - 2026-07-12
 
 ### added

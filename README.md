@@ -8,10 +8,8 @@ a ground up rewrite of the polymarket cli built for AI agent support and backtes
 
 [![linux ci](https://github.com/jesodium/fiberglass/actions/workflows/ci-linux.yml/badge.svg?branch=main)](https://github.com/jesodium/fiberglass/actions/workflows/ci-linux.yml?query=branch%3Amain)
 
-![windows ci](https://img.shields.io/badge/windows%20ci-disabled-red)
+[![windows ci](https://github.com/jesodium/fiberglass/actions/workflows/ci-windows.yml/badge.svg?branch=main)](https://github.com/jesodium/fiberglass/actions/workflows/ci-windows.yml?query=branch%3Amain)
 
-> **windows support:** CI and release builds for windows are temporarily disabled, the windows-latest GitHub Actions runner hangs indefinitely partway through the test suite (not a crash, not just slow; still unresolved). This is a CI-environment issue, not a known problem with the app itself `cargo install --path .` should still work if you're building from source on windows. No windows binary is published for this release and a fix date is not planned.
->
 ## Use your own money at your own risk!
 The live mode has not been tested yet; if you lose your money, it's your problem.
 
