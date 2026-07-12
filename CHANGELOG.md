@@ -10,6 +10,8 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+## [0.1.23] - 2026-07-12
+
 ### fixed
 - windows: the detached background worker no longer inherits the parent
   process's stdout/stderr pipes, which kept pipelines (and the CI test
@@ -20,6 +22,10 @@ version numbers keep their original case).
 - ci: windows checks and release builds re-enabled.
 - tests: the integration suite no longer spawns a real background worker on
   the test machine (`POLYMARKET_NO_WORKER=1`).
+
+### added
+- windows binaries (`x86_64-pc-windows-msvc`) are published again starting
+  with this release; readme install section points at them.
 
 ## [0.1.22] - 2026-07-12
 

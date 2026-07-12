@@ -29,6 +29,9 @@ cd fiberglass
 cargo install --path .
 ```
 
+on windows, grab the `x86_64-pc-windows-msvc` archive from the
+[latest release](https://github.com/jesodium/fiberglass/releases/latest) or build from source as above.
+
 ## the TUI
 
 main way to use it:
