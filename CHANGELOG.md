@@ -10,6 +10,24 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+## [0.1.22] - 2026-07-12
+
+### added
+- tui: connection-quality signal bars driven by real fetch round-trip time
+  (book + market polls), with a live latency readout in ms. shown in the
+  top-tab header and the sidebar nav footer.
+- tui: dashboard tab with a 3-column overview, five kpi cards, and
+  account/copytraders, holdings/orders, and history panels.
+- settings: `top_tabs` toggle to switch the tui between a top tab bar and the
+  left sidebar for navigation.
+
+### changed
+- copytrade: the live order path now applies the same slippage check as the
+  paper path before placing real orders, honoring `slippage_pct`.
+- paper: `max_drawdown_pct` is computed from per-trade running equity in
+  timestamp order instead of daily buckets, so intraday peak-to-trough is no
+  longer flattened. recomputed from the trade log for existing accounts.
+
 ## [0.1.21] - 2026-07-08
 
 ### added
