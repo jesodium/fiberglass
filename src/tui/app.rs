@@ -153,6 +153,8 @@ pub(crate) enum SettingRow {
     GuardAutostart,
     /// Toggle: top tab bar vs left sidebar nav.
     TopTabs,
+    /// Toggle: market-detail history as filled area chart vs tug-of-war bars.
+    ChartStyle,
     Field(SettingField),
 }
 
@@ -254,11 +256,12 @@ fn sort_live_orders(list: &mut [LiveOpenOrder], col: usize, asc: bool) {
     });
 }
 
-pub(crate) const SETTING_ROWS: [SettingRow; 12] = [
+pub(crate) const SETTING_ROWS: [SettingRow; 13] = [
     SettingRow::Mode,
     SettingRow::AutoSettle,
     SettingRow::GuardAutostart,
     SettingRow::TopTabs,
+    SettingRow::ChartStyle,
     SettingRow::Field(SettingField::Threshold),
     SettingRow::Field(SettingField::Quickbuy),
     SettingRow::Field(SettingField::Quicksell),
@@ -1223,6 +1226,15 @@ impl App {
                     "Navigation: top tab bar.".into()
                 } else {
                     "Navigation: left sidebar.".into()
+                };
+            }
+            SettingRow::ChartStyle => {
+                self.settings.tug_of_war_chart = !self.settings.tug_of_war_chart;
+                self.persist_settings();
+                self.status = if self.settings.tug_of_war_chart {
+                    "Price history: tug-of-war bars.".into()
+                } else {
+                    "Price history: area chart.".into()
                 };
             }
             SettingRow::Field(field) => {

@@ -106,6 +106,9 @@ pub(crate) struct Settings {
     /// When true, the TUI shows a horizontal tab bar across the top instead of
     /// the left sidebar rail.
     pub top_tabs: bool,
+    /// Market-detail price history style: `true` draws the tug-of-war bars
+    /// (one green/gold row per time bucket), `false` the filled area chart.
+    pub tug_of_war_chart: bool,
 }
 
 impl Default for Settings {
@@ -127,6 +130,7 @@ impl Default for Settings {
             auto_settle: false,
             copy_poll_secs: 15,
             top_tabs: false,
+            tug_of_war_chart: false,
         }
     }
 }

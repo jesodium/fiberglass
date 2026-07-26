@@ -920,11 +920,10 @@ fn market_detail(f: &mut Frame, app: &App, area: Rect) {
     render_position_box(f, app, &token, right[1]);
 }
 
-/// Tug-of-war bars: one row per time bucket, each split between the focused
-/// outcome (left, green) and the opposing side (right, gold) so the boundary
-/// shows who's winning and how the fight shifted over time. The series is
-/// fetched in the background keyed by token + timeframe; until the fresh one
-/// lands we show a placeholder rather than a stale picture.
+/// Probability line chart of the focused outcome over time. Y axis is
+/// auto-scaled to the series (fixed 0-100% flattens most markets). The series
+/// is fetched in the background keyed by token + timeframe; until the fresh
+/// one lands we show a placeholder rather than a stale picture.
 fn render_price_chart(f: &mut Frame, app: &App, outcome: &str, area: Rect) {
     use super::data::DETAIL_TIMEFRAMES;
 
@@ -963,20 +962,29 @@ fn render_price_chart(f: &mut Frame, app: &App, outcome: &str, area: Rect) {
         };
         title.push(Span::styled(format!("{label} "), style));
     }
+    let data = app.data.lock().unwrap();
+    let points: Vec<(f64, f64)> = match data.price_history.as_ref() {
+        Some(ph) if ph.token == focused_token && ph.timeframe == app.detail_timeframe => ph
+            .points
+            .iter()
+            .map(|&(t, p)| (t, p.clamp(0.0, 1.0)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    drop(data);
+
+    // Current value readout in the title, where the per-row % used to live.
+    if let Some(&(_, p)) = points.last() {
+        title.push(Span::styled(
+            format!("· {:.0}% ", p * 100.0),
+            Style::default().fg(GOOD).bold(),
+        ));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PANEL))
         .title(Line::from(title));
-
-    let data = app.data.lock().unwrap();
-    let points: Vec<(f64, f64)> = match data.price_history.as_ref() {
-        Some(ph) if ph.token == focused_token && ph.timeframe == app.detail_timeframe => {
-            ph.points.clone()
-        }
-        _ => Vec::new(),
-    };
-    drop(data);
 
     if points.len() < 2 {
         f.render_widget(
@@ -986,6 +994,100 @@ fn render_price_chart(f: &mut Frame, app: &App, outcome: &str, area: Rect) {
         return;
     }
 
+    if app.settings.tug_of_war_chart {
+        render_tug_of_war(f, &points, block, area);
+        return;
+    }
+
+    // Y bounds hug the series; the padding also guarantees a minimum visible
+    // span so a flat market doesn't render as a full-frame line.
+    let (lo, hi) = points
+        .iter()
+        .fold((1.0f64, 0.0f64), |(lo, hi), &(_, p)| (lo.min(p), hi.max(p)));
+    let pad = ((hi - lo) * 0.15).max(0.025);
+    let (lo, hi) = ((lo - pad).max(0.0), (hi + pad).min(1.0));
+
+    let (t0, t1) = (points[0].0, points.last().unwrap().0);
+    let time_fmt = if app.detail_timeframe == 3 {
+        "%m-%d"
+    } else {
+        "%H:%M"
+    };
+    let xlab = |t: f64| {
+        chrono::DateTime::from_timestamp(t as i64, 0)
+            .map_or("--".to_string(), |dt| dt.format(time_fmt).to_string())
+    };
+    let ylab = |p: f64| format!("{:>3.0}%", p * 100.0);
+
+    // Filled "mountain" chart: each column is a bar from the floor (lo) up to
+    // the sampled price, drawn in eighth-block steps for a smooth crest.
+    let rows = area.height.saturating_sub(2) as usize; // inside borders
+    let cols = (area.width.saturating_sub(2) as usize).saturating_sub(GUTTER);
+    if rows < 3 || cols < 8 {
+        f.render_widget(Paragraph::new("").block(block), area);
+        return;
+    }
+    const GUTTER: usize = 5; // "NN% │"
+    const EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let chart_rows = rows - 2; // last two rows: axis line + time labels
+    let n = points.len();
+
+    // Column heights in eighths of a row (≥1 so the floor is always visible).
+    let heights: Vec<usize> = (0..cols)
+        .map(|j| {
+            let idx = j * (n - 1) / (cols - 1).max(1);
+            let v = ((points[idx].1 - lo) / (hi - lo)).clamp(0.0, 1.0);
+            ((v * (chart_rows * 8) as f64).round() as usize).max(1)
+        })
+        .collect();
+
+    let dim = Style::default().fg(DIM);
+    let mut lines: Vec<Line> = (0..chart_rows)
+        .map(|r| {
+            let label = match r {
+                0 => ylab(hi),
+                _ if r == chart_rows / 2 => ylab((lo + hi) / 2.0),
+                _ if r == chart_rows - 1 => ylab(lo),
+                _ => "    ".to_string(),
+            };
+            let floor = (chart_rows - 1 - r) * 8; // eighths below this row
+            let bar: String = heights
+                .iter()
+                .map(|&h| match h.saturating_sub(floor) {
+                    0 => ' ',
+                    e => EIGHTHS[e.min(8) - 1],
+                })
+                .collect();
+            Line::from(vec![
+                Span::styled(format!("{label}│"), dim),
+                Span::styled(bar, Style::default().fg(GOOD)),
+            ])
+        })
+        .collect();
+
+    lines.push(Line::from(Span::styled(
+        format!("    └{}", "─".repeat(cols)),
+        Style::default().fg(PANEL),
+    )));
+    let (start, mid, end) = (xlab(t0), xlab((t0 + t1) / 2.0), xlab(t1));
+    let total = GUTTER + cols;
+    let gap = total.saturating_sub(start.len() + mid.len() + end.len());
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{start}{}{mid}{}{end}",
+            " ".repeat(gap / 2),
+            " ".repeat(gap - gap / 2)
+        ),
+        dim,
+    )));
+
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Tug-of-war bars: one row per time bucket, each split between the focused
+/// outcome (left, green) and the opposing side (right, gold) so the boundary
+/// shows who's winning and how the fight shifted over time.
+fn render_tug_of_war(f: &mut Frame, points: &[(f64, f64)], block: Block, area: Rect) {
     // One bar per usable text row; downsample the series evenly to fit. Time
     // flows top (oldest) → bottom (latest).
     let rows = area.height.saturating_sub(2).max(1) as usize;
@@ -1004,7 +1106,6 @@ fn render_price_chart(f: &mut Frame, app: &App, outcome: &str, area: Rect) {
                 i * (n - 1) / (take - 1)
             };
             let (t, p) = points[idx];
-            let p = p.clamp(0.0, 1.0);
             let fill = (p * bar_w as f64).round() as usize;
             let fill = fill.min(bar_w);
             let time = chrono::DateTime::from_timestamp(t as i64, 0)
@@ -2167,6 +2268,14 @@ fn render_trading_settings(f: &mut Frame, app: &App, area: Rect) {
                         "Top tab bar".to_string()
                     } else {
                         "Left sidebar".to_string()
+                    },
+                ),
+                SettingRow::ChartStyle => (
+                    "Price history chart",
+                    if s.tug_of_war_chart {
+                        "Tug-of-war bars".to_string()
+                    } else {
+                        "Area chart".to_string()
                     },
                 ),
                 SettingRow::Field(field) => {
