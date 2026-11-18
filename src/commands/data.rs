@@ -1,15 +1,8 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use polymarket_client_sdk_v2::data::{
-    self,
-    types::request::{
-        ActivityRequest, BuilderLeaderboardRequest, BuilderVolumeRequest, ClosedPositionsRequest,
-        HoldersRequest, LiveVolumeRequest, OpenInterestRequest, PositionsRequest, TradedRequest,
-        TraderLeaderboardRequest, TradesRequest, ValueRequest,
-    },
-};
 use polymarket_client_sdk_v2::types::{Address, B256};
 
+use crate::dataapi::{self, MAX_PAGE};
 use crate::output::OutputFormat;
 use crate::output::data::{
     print_activity, print_builder_leaderboard, print_builder_volume, print_closed_positions,
@@ -178,13 +171,13 @@ pub enum TimePeriod {
     All,
 }
 
-impl From<TimePeriod> for polymarket_client_sdk_v2::data::types::TimePeriod {
-    fn from(v: TimePeriod) -> Self {
-        match v {
-            TimePeriod::Day => Self::Day,
-            TimePeriod::Week => Self::Week,
-            TimePeriod::Month => Self::Month,
-            TimePeriod::All => Self::All,
+impl TimePeriod {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::All => "all",
         }
     }
 }
@@ -195,40 +188,31 @@ pub enum OrderBy {
     Vol,
 }
 
-impl From<OrderBy> for polymarket_client_sdk_v2::data::types::LeaderboardOrderBy {
-    fn from(v: OrderBy) -> Self {
-        match v {
-            OrderBy::Pnl => Self::Pnl,
-            OrderBy::Vol => Self::Vol,
-        }
-    }
+/// v1 `--limit`/`--offset` flags (kept for CLI/MCP compatibility) as a v2 window.
+fn window(limit: i32, offset: Option<i32>) -> (usize, usize) {
+    (
+        usize::try_from(limit).unwrap_or(0).max(1),
+        offset.and_then(|o| usize::try_from(o).ok()).unwrap_or(0),
+    )
 }
 
-pub async fn execute(client: &data::Client, args: DataArgs, output: OutputFormat) -> Result<()> {
+pub async fn execute(args: DataArgs, output: OutputFormat) -> Result<()> {
     match args.command {
         DataCommand::Positions {
             address,
             limit,
             offset,
         } => {
-            let request = PositionsRequest::builder()
-                .user(address)
-                .limit(limit)?
-                .maybe_offset(offset)?
-                .build();
-
-            let positions = client.positions(&request).await?;
+            let (limit, offset) = window(limit, offset);
+            let q = vec![("user", address.to_string())];
+            let positions = dataapi::list_window("positions", q, limit, offset).await?;
             print_positions(&positions, &output)?;
         }
 
         DataCommand::Pnl { address } => {
-            // IMPORTANT NOTE: fetch up to 500 positions; paginate if anyone holds more.
-            let request = PositionsRequest::builder()
-                .user(address)
-                .limit(500)?
-                .build();
-
-            let positions = client.positions(&request).await?;
+            // IMPORTANT NOTE: one max-size page (1000 positions); raise the cap if anyone holds more.
+            let q = vec![("user", address.to_string())];
+            let positions = dataapi::list("positions", q, MAX_PAGE).await?;
             print_pnl_summary(&positions, &output)?;
         }
 
@@ -237,28 +221,20 @@ pub async fn execute(client: &data::Client, args: DataArgs, output: OutputFormat
             limit,
             offset,
         } => {
-            let request = ClosedPositionsRequest::builder()
-                .user(address)
-                .limit(limit)?
-                .maybe_offset(offset)?
-                .build();
-
-            let positions = client.closed_positions(&request).await?;
+            let (limit, offset) = window(limit, offset);
+            let q = vec![("user", address.to_string()), ("status", "CLOSED".into())];
+            let positions = dataapi::list_window("positions", q, limit, offset).await?;
             print_closed_positions(&positions, &output)?;
         }
 
         DataCommand::Value { address } => {
-            let request = ValueRequest::builder().user(address).build();
-
-            let values = client.value(&request).await?;
-            print_value(&values, &output)?;
+            let value = dataapi::get("value", vec![("user", address.to_string())]).await?;
+            print_value(&[value], &output)?;
         }
 
         DataCommand::Traded { address } => {
-            let request = TradedRequest::builder().user(address).build();
-
-            let traded = client.traded(&request).await?;
-            print_traded(&traded, &output)?;
+            let stats = dataapi::get("user-stats", vec![("user", address.to_string())]).await?;
+            print_traded(&stats, &output)?;
         }
 
         DataCommand::Trades {
@@ -266,13 +242,13 @@ pub async fn execute(client: &data::Client, args: DataArgs, output: OutputFormat
             limit,
             offset,
         } => {
-            let request = TradesRequest::builder()
-                .user(address)
-                .limit(limit)?
-                .maybe_offset(offset)?
-                .build();
-
-            let trades = client.trades(&request).await?;
+            let (limit, offset) = window(limit, offset);
+            // v2 defaults to taker-only; a wallet's history should include its maker fills.
+            let q = vec![
+                ("user", address.to_string()),
+                ("taker_only", "false".into()),
+            ];
+            let trades = dataapi::list_window("trades", q, limit, offset).await?;
             print_trades(&trades, &output)?;
         }
 
@@ -281,36 +257,30 @@ pub async fn execute(client: &data::Client, args: DataArgs, output: OutputFormat
             limit,
             offset,
         } => {
-            let request = ActivityRequest::builder()
-                .user(address)
-                .limit(limit)?
-                .maybe_offset(offset)?
-                .build();
-
-            let activity = client.activity(&request).await?;
+            let (limit, offset) = window(limit, offset);
+            let q = vec![("user", address.to_string())];
+            let activity = dataapi::list_window("activity", q, limit, offset).await?;
             print_activity(&activity, &output)?;
         }
 
         DataCommand::Holders { market, limit } => {
-            let request = HoldersRequest::builder()
-                .markets(vec![market])
-                .limit(limit)?
-                .build();
-
-            let holders = client.holders(&request).await?;
+            // `limit` is per outcome token here, and the payload is grouped by token.
+            let q = vec![
+                ("condition", market.to_string()),
+                ("limit", limit.to_string()),
+            ];
+            let holders: Vec<dataapi::MetaHolder> = dataapi::get("holders", q).await?;
             print_holders(&holders, &output)?;
         }
 
         DataCommand::OpenInterest { market } => {
-            let request = OpenInterestRequest::builder().markets(vec![market]).build();
-
-            let oi = client.open_interest(&request).await?;
+            let oi: Vec<dataapi::OpenInterest> =
+                dataapi::get("oi", vec![("condition", market.to_string())]).await?;
             print_open_interest(&oi, &output)?;
         }
 
         DataCommand::Volume { id } => {
-            let request = LiveVolumeRequest::builder().id(id).build();
-            let volume = client.live_volume(&request).await?;
+            let volume = dataapi::get("live-volume", vec![("event_id", id.to_string())]).await?;
             print_live_volume(&volume, &output)?;
         }
 
@@ -320,14 +290,19 @@ pub async fn execute(client: &data::Client, args: DataArgs, output: OutputFormat
             limit,
             offset,
         } => {
-            let request = TraderLeaderboardRequest::builder()
-                .maybe_time_period(period.map(Into::into))
-                .maybe_order_by(order_by.map(Into::into))
-                .limit(limit)?
-                .maybe_offset(offset)?
-                .build();
-
-            let entries = client.leaderboard(&request).await?;
+            let (limit, offset) = window(limit, offset);
+            let mut q = Vec::new();
+            if let Some(p) = period {
+                q.push(("time_period", p.as_str().to_string()));
+            }
+            if let Some(o) = order_by {
+                let board = match o {
+                    OrderBy::Pnl => "PNL",
+                    OrderBy::Vol => "VOLUME",
+                };
+                q.push(("sort_by", board.to_string()));
+            }
+            let entries = dataapi::list_window("leaderboard", q, limit, offset).await?;
             print_leaderboard(&entries, &output)?;
         }
 
@@ -336,22 +311,21 @@ pub async fn execute(client: &data::Client, args: DataArgs, output: OutputFormat
             limit,
             offset,
         } => {
-            let request = BuilderLeaderboardRequest::builder()
-                .maybe_time_period(period.map(Into::into))
-                .limit(limit)?
-                .maybe_offset(offset)?
-                .build();
-
-            let entries = client.builder_leaderboard(&request).await?;
+            let (limit, offset) = window(limit, offset);
+            let q = period
+                .map(|p| ("time_period", p.as_str().to_string()))
+                .into_iter()
+                .collect();
+            let entries = dataapi::list_window("builders/leaderboard", q, limit, offset).await?;
             print_builder_leaderboard(&entries, &output)?;
         }
 
         DataCommand::BuilderVolume { period } => {
-            let request = BuilderVolumeRequest::builder()
-                .maybe_time_period(period.map(Into::into))
-                .build();
-
-            let entries = client.builder_volume(&request).await?;
+            let q = period
+                .map(|p| ("interval", p.as_str().to_string()))
+                .into_iter()
+                .collect();
+            let entries: Vec<dataapi::BuilderEntry> = dataapi::get("builders/volume", q).await?;
             print_builder_volume(&entries, &output)?;
         }
     }

@@ -8,11 +8,6 @@ use chrono::{DateTime, Utc};
 use polymarket_client_sdk_v2::auth::LocalSigner;
 use polymarket_client_sdk_v2::clob::types::AssetType;
 use polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest;
-use polymarket_client_sdk_v2::data;
-use polymarket_client_sdk_v2::data::types::Side;
-use polymarket_client_sdk_v2::data::types::request::{
-    ClosedPositionsRequest, PositionsRequest, TradesRequest,
-};
 use polymarket_client_sdk_v2::gamma::{self, types::request::PublicProfileRequest};
 use polymarket_client_sdk_v2::types::{Address, Decimal};
 use polymarket_client_sdk_v2::{POLYGON, derive_proxy_wallet};
@@ -21,6 +16,7 @@ use std::str::FromStr;
 use crate::auth;
 use crate::commands::COLLATERAL_DECIMALS;
 use crate::config;
+use crate::dataapi::{self, MAX_PAGE};
 use crate::paper::types::{OrderKind, Position, Trade, TradeSide};
 
 pub(crate) use crate::trade::LiveOrder;
@@ -88,19 +84,17 @@ pub(crate) fn resolve_user_address() -> Result<Address> {
 }
 
 pub(crate) async fn fetch_positions(user: Address) -> Result<Vec<Position>> {
-    let client = data::Client::default();
-    let request = PositionsRequest::builder().user(user).build();
-    let raw = client
-        .positions(&request)
-        .await
-        .context("Failed to fetch positions")?;
+    let raw: Vec<dataapi::Position> =
+        dataapi::list("positions", vec![("user", user.to_string())], MAX_PAGE)
+            .await
+            .context("Failed to fetch positions")?;
     Ok(raw
         .into_iter()
         .map(|p| Position {
-            token_id: p.asset.to_string(),
+            token_id: p.token_id,
             question: p.title,
             outcome: p.outcome,
-            size: p.size,
+            size: p.current_size,
             avg_price: p.avg_price,
             realized_pnl: p.realized_pnl,
             entry_midpoint: Decimal::ZERO,
@@ -112,15 +106,9 @@ pub(crate) async fn fetch_positions(user: Address) -> Result<Vec<Position>> {
 /// market, so the dashboard's realized-PnL stats (win rate, avg win/loss, profit
 /// factor) work in live mode — `account.trades` is otherwise never hydrated.
 pub(crate) async fn fetch_closed_trades(user: Address) -> Result<Vec<Trade>> {
-    let client = data::Client::default();
-    // IMPORTANT NOTE: server caps this endpoint at 50 (rejects >50); add pagination if
-    // a user ever closes more than 50 markets and needs the older ones.
-    let request = ClosedPositionsRequest::builder()
-        .user(user)
-        .limit(50)?
-        .build();
-    let raw = client
-        .closed_positions(&request)
+    // IMPORTANT NOTE: newest 1000 closed markets (one max page); raise if older ones matter.
+    let query = vec![("user", user.to_string()), ("status", "CLOSED".into())];
+    let raw: Vec<dataapi::Position> = dataapi::list("positions", query, MAX_PAGE)
         .await
         .context("Failed to fetch closed positions")?;
     let mut trades: Vec<Trade> = raw
@@ -129,22 +117,22 @@ pub(crate) async fn fetch_closed_trades(user: Address) -> Result<Vec<Trade>> {
         .map(|(i, p)| {
             // Entry cost = avg entry × size; exit notional = entry cost + realized,
             // so `notional − realized = entry cost` holds (cost-basis & history tab).
-            let entry_cost = p.avg_price * p.total_bought;
+            let entry_cost = p.avg_price * p.total_size;
             let exit_notional = entry_cost + p.realized_pnl;
-            let exit_price = if p.total_bought > Decimal::ZERO {
-                exit_notional / p.total_bought
+            let exit_price = if p.total_size > Decimal::ZERO {
+                exit_notional / p.total_size
             } else {
-                p.cur_price
+                p.current_price
             };
             Trade {
                 id: i as u64,
-                timestamp: chrono::DateTime::from_timestamp(p.timestamp, 0).unwrap_or_default(),
-                token_id: p.asset.to_string(),
+                timestamp: chrono::DateTime::from_timestamp(p.last_event_at, 0).unwrap_or_default(),
+                token_id: p.token_id,
                 question: p.title,
                 outcome: p.outcome,
                 side: TradeSide::Sell,
                 kind: OrderKind::Market,
-                size: p.total_bought,
+                size: p.total_size,
                 price: exit_price,
                 notional: exit_notional,
                 realized_pnl: Some(p.realized_pnl),
@@ -160,30 +148,32 @@ pub(crate) async fn fetch_closed_trades(user: Address) -> Result<Vec<Trade>> {
 /// endpoint — the full activity log shown on the Polymarket site, for the live
 /// History tab. These carry no realized PnL (that's per-closed-position).
 pub(crate) async fn fetch_fills(user: Address) -> Result<Vec<Trade>> {
-    let client = data::Client::default();
-    let request = TradesRequest::builder().user(user).limit(500)?.build();
-    let raw = client
-        .trades(&request)
+    // v2 defaults to taker-only; the wallet's own history must include its maker fills.
+    let query = vec![("user", user.to_string()), ("taker_only", "false".into())];
+    let raw: Vec<dataapi::Activity> = dataapi::list("trades", query, 500)
         .await
         .context("Failed to fetch trade fills")?;
     let mut trades: Vec<Trade> = raw
         .into_iter()
         .enumerate()
-        .map(|(i, t)| Trade {
-            id: i as u64,
-            timestamp: DateTime::from_timestamp(t.timestamp, 0).unwrap_or_default(),
-            token_id: t.asset.to_string(),
-            question: t.title,
-            outcome: t.outcome,
-            side: match t.side {
-                Side::Sell => TradeSide::Sell,
-                _ => TradeSide::Buy,
-            },
-            kind: OrderKind::Market,
-            size: t.size,
-            price: t.price,
-            notional: t.size * t.price,
-            realized_pnl: None,
+        .map(|(i, t)| {
+            let price = t.price.unwrap_or_default();
+            Trade {
+                id: i as u64,
+                timestamp: DateTime::from_timestamp(t.timestamp, 0).unwrap_or_default(),
+                token_id: t.token_id.unwrap_or_default(),
+                question: t.title.unwrap_or_default(),
+                outcome: t.outcome.unwrap_or_default(),
+                side: match t.side.as_deref() {
+                    Some("SELL") => TradeSide::Sell,
+                    _ => TradeSide::Buy,
+                },
+                kind: OrderKind::Market,
+                size: t.size,
+                price,
+                notional: t.size * price,
+                realized_pnl: None,
+            }
         })
         .collect();
     trades.sort_by_key(|t| t.timestamp);

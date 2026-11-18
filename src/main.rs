@@ -2,6 +2,7 @@ mod auth;
 mod commands;
 mod config;
 mod copytrade;
+mod dataapi;
 mod events;
 mod guard;
 mod mcp;
@@ -186,7 +187,6 @@ async fn run_main() -> ExitCode {
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Lazy-init so we only pay for the client we actually use.
     let gamma = std::cell::LazyCell::new(polymarket_client_sdk_v2::gamma::Client::default);
-    let data = std::cell::LazyCell::new(polymarket_client_sdk_v2::data::Client::default);
     let bridge = std::cell::LazyCell::new(polymarket_client_sdk_v2::bridge::Client::default);
 
     match cli.command {
@@ -238,7 +238,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Portfolio(args) => commands::portfolio::execute(args, cli.output).await,
         Commands::Paper(args) => commands::paper::execute(args, cli.output).await,
-        Commands::Data(args) => commands::data::execute(&data, args, cli.output).await,
+        Commands::Data(args) => commands::data::execute(args, cli.output).await,
         Commands::Bridge(args) => commands::bridge::execute(&bridge, args, cli.output).await,
         Commands::Wallet(args) => {
             commands::wallet::execute(args, cli.output, cli.private_key.as_deref())

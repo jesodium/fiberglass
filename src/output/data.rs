@@ -1,6 +1,6 @@
-use polymarket_client_sdk_v2::data::types::response::{
-    Activity, BuilderLeaderboardEntry, BuilderVolumeEntry, ClosedPosition, LiveVolume, Market,
-    MetaHolder, OpenInterest, Position, Trade, Traded, TraderLeaderboardEntry, Value,
+use crate::dataapi::{
+    Activity, BuilderEntry, LeaderboardEntry, LiveVolume, MetaHolder, OpenInterest, PortfolioValue,
+    Position, UserStats,
 };
 use serde_json::json;
 use tabled::settings::Style;
@@ -8,19 +8,19 @@ use tabled::{Table, Tabled};
 
 use super::{DASH, OutputFormat, format_decimal, truncate};
 
-fn format_market(m: &Market) -> String {
-    match m {
-        Market::Global => "Global".into(),
-        Market::Market(id) => id.to_string(),
-        _ => "Unknown".into(),
+fn format_market(condition_id: &str) -> String {
+    if condition_id.eq_ignore_ascii_case("global") {
+        "Global".into()
+    } else {
+        condition_id.into()
     }
 }
 
 pub fn print_pnl_summary(positions: &[Position], output: &OutputFormat) -> anyhow::Result<()> {
     use polymarket_client_sdk_v2::types::Decimal;
-    let cost: Decimal = positions.iter().map(|p| p.initial_value).sum();
+    let cost: Decimal = positions.iter().map(|p| p.entry_cost_usdc).sum();
     let value: Decimal = positions.iter().map(|p| p.current_value).sum();
-    let unrealized: Decimal = positions.iter().map(|p| p.cash_pnl).sum();
+    let unrealized: Decimal = positions.iter().map(|p| p.unrealized_pnl).sum();
     let realized: Decimal = positions.iter().map(|p| p.realized_pnl).sum();
     let total = unrealized + realized;
     // ROI on cost basis; zero cost => zero ROI rather than a divide-by-zero.
@@ -82,10 +82,10 @@ pub fn print_positions(positions: &[Position], output: &OutputFormat) -> anyhow:
                 .map(|p| Row {
                     title: truncate(&p.title, 40),
                     outcome: p.outcome.clone(),
-                    size: format!("{:.2}", p.size),
+                    size: format!("{:.2}", p.current_size),
                     avg_price: format!("{:.4}", p.avg_price),
                     current_value: format_decimal(p.current_value),
-                    pnl: format!("{:.2}", p.cash_pnl),
+                    pnl: format!("{:.2}", p.unrealized_pnl),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::rounded()).to_string();
@@ -104,23 +104,23 @@ pub fn print_positions(positions: &[Position], output: &OutputFormat) -> anyhow:
                         "outcome": p.outcome,
                         "outcome_index": p.outcome_index,
                         "opposite_outcome": p.opposite_outcome,
-                        "opposite_asset": p.opposite_asset.to_string(),
-                        "asset": p.asset.to_string(),
-                        "size": p.size.to_string(),
+                        "opposite_asset": p.opposite_token_id,
+                        "asset": p.token_id,
+                        "size": p.current_size.to_string(),
                         "avg_price": p.avg_price.to_string(),
-                        "initial_value": p.initial_value.to_string(),
+                        "initial_value": p.entry_cost_usdc.to_string(),
                         "current_value": p.current_value.to_string(),
-                        "cash_pnl": p.cash_pnl.to_string(),
+                        "cash_pnl": p.unrealized_pnl.to_string(),
                         "percent_pnl": p.percent_pnl.to_string(),
-                        "total_bought": p.total_bought.to_string(),
+                        "total_bought": p.total_size.to_string(),
                         "realized_pnl": p.realized_pnl.to_string(),
                         "percent_realized_pnl": p.percent_realized_pnl.to_string(),
-                        "cur_price": p.cur_price.to_string(),
-                        "condition_id": p.condition_id.to_string(),
-                        "proxy_wallet": p.proxy_wallet.to_string(),
+                        "cur_price": p.current_price.to_string(),
+                        "condition_id": p.condition_id,
+                        "proxy_wallet": p.proxy_wallet,
                         "redeemable": p.redeemable,
                         "mergeable": p.mergeable,
-                        "end_date": p.end_date.map(|d| d.to_string()),
+                        "end_date": (!p.end_date.is_empty()).then_some(&p.end_date),
                         "negative_risk": p.negative_risk,
                     })
                 })
@@ -131,10 +131,7 @@ pub fn print_positions(positions: &[Position], output: &OutputFormat) -> anyhow:
     Ok(())
 }
 
-pub fn print_closed_positions(
-    positions: &[ClosedPosition],
-    output: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn print_closed_positions(positions: &[Position], output: &OutputFormat) -> anyhow::Result<()> {
     match output {
         OutputFormat::Table => {
             if positions.is_empty() {
@@ -176,16 +173,16 @@ pub fn print_closed_positions(
                         "outcome": p.outcome,
                         "outcome_index": p.outcome_index,
                         "opposite_outcome": p.opposite_outcome,
-                        "opposite_asset": p.opposite_asset.to_string(),
-                        "asset": p.asset.to_string(),
+                        "opposite_asset": p.opposite_token_id,
+                        "asset": p.token_id,
                         "avg_price": p.avg_price.to_string(),
-                        "total_bought": p.total_bought.to_string(),
+                        "total_bought": p.total_size.to_string(),
                         "realized_pnl": p.realized_pnl.to_string(),
-                        "cur_price": p.cur_price.to_string(),
-                        "condition_id": p.condition_id.to_string(),
-                        "proxy_wallet": p.proxy_wallet.to_string(),
-                        "timestamp": p.timestamp,
-                        "end_date": p.end_date.date_naive().to_string(),
+                        "cur_price": p.current_price.to_string(),
+                        "condition_id": p.condition_id,
+                        "proxy_wallet": p.proxy_wallet,
+                        "timestamp": p.last_event_at,
+                        "end_date": p.end_date,
                     })
                 })
                 .collect();
@@ -195,7 +192,7 @@ pub fn print_closed_positions(
     Ok(())
 }
 
-pub fn print_value(values: &[Value], output: &OutputFormat) -> anyhow::Result<()> {
+pub fn print_value(values: &[PortfolioValue], output: &OutputFormat) -> anyhow::Result<()> {
     match output {
         OutputFormat::Table => {
             if values.is_empty() {
@@ -212,7 +209,7 @@ pub fn print_value(values: &[Value], output: &OutputFormat) -> anyhow::Result<()
             let rows: Vec<Row> = values
                 .iter()
                 .map(|v| Row {
-                    user: truncate(&v.user.to_string(), 14),
+                    user: truncate(&v.proxy_wallet, 14),
                     value: format_decimal(v.value),
                 })
                 .collect();
@@ -222,7 +219,7 @@ pub fn print_value(values: &[Value], output: &OutputFormat) -> anyhow::Result<()
         OutputFormat::Json => {
             let data: Vec<_> = values
                 .iter()
-                .map(|v| json!({"user": v.user.to_string(), "value": v.value.to_string()}))
+                .map(|v| json!({"user": v.proxy_wallet, "value": v.value.to_string()}))
                 .collect();
             super::print_json(&data)?;
         }
@@ -230,20 +227,20 @@ pub fn print_value(values: &[Value], output: &OutputFormat) -> anyhow::Result<()
     Ok(())
 }
 
-pub fn print_traded(t: &Traded, output: &OutputFormat) -> anyhow::Result<()> {
+pub fn print_traded(t: &UserStats, output: &OutputFormat) -> anyhow::Result<()> {
     match output {
-        OutputFormat::Table => println!("{}: {} markets traded", t.user, t.traded),
+        OutputFormat::Table => println!("{}: {} markets traded", t.proxy_wallet, t.trades),
         OutputFormat::Json => {
             super::print_json(&json!({
-                "user": t.user.to_string(),
-                "traded": t.traded,
+                "user": t.proxy_wallet,
+                "traded": t.trades,
             }))?;
         }
     }
     Ok(())
 }
 
-pub fn print_trades(trades: &[Trade], output: &OutputFormat) -> anyhow::Result<()> {
+pub fn print_trades(trades: &[Activity], output: &OutputFormat) -> anyhow::Result<()> {
     match output {
         OutputFormat::Table => {
             if trades.is_empty() {
@@ -266,11 +263,11 @@ pub fn print_trades(trades: &[Trade], output: &OutputFormat) -> anyhow::Result<(
             let rows: Vec<Row> = trades
                 .iter()
                 .map(|t| Row {
-                    title: truncate(&t.title, 40),
-                    side: t.side.to_string(),
-                    outcome: t.outcome.clone(),
+                    title: truncate(t.title.as_deref().unwrap_or(DASH), 40),
+                    side: t.side.clone().unwrap_or_default(),
+                    outcome: t.outcome.as_deref().unwrap_or(DASH).into(),
                     size: format!("{:.2}", t.size),
-                    price: format!("{:.4}", t.price),
+                    price: t.price.map(|p| format!("{:.4}", p)).unwrap_or_default(),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::rounded()).to_string();
@@ -285,16 +282,16 @@ pub fn print_trades(trades: &[Trade], output: &OutputFormat) -> anyhow::Result<(
                         "slug": t.slug,
                         "icon": t.icon,
                         "event_slug": t.event_slug,
-                        "side": t.side.to_string(),
+                        "side": t.side,
                         "outcome": t.outcome,
                         "outcome_index": t.outcome_index,
-                        "asset": t.asset.to_string(),
+                        "asset": t.token_id,
                         "size": t.size.to_string(),
-                        "price": t.price.to_string(),
+                        "price": t.price.map(|p| p.to_string()),
                         "timestamp": t.timestamp,
-                        "condition_id": t.condition_id.to_string(),
-                        "proxy_wallet": t.proxy_wallet.to_string(),
-                        "transaction_hash": t.transaction_hash.to_string(),
+                        "condition_id": t.condition_id,
+                        "proxy_wallet": t.proxy_wallet,
+                        "transaction_hash": t.transaction_hash,
                         "name": t.name,
                         "pseudonym": t.pseudonym,
                         "bio": t.bio,
@@ -338,14 +335,14 @@ pub fn print_activity(activity: &[Activity], output: &OutputFormat) -> anyhow::R
             let rows: Vec<Row> = activity
                 .iter()
                 .map(|a| Row {
-                    activity_type: a.activity_type.to_string(),
+                    activity_type: a.kind.clone(),
                     title: truncate(a.title.as_deref().unwrap_or(DASH), 35),
-                    side: a.side.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    side: a.side.clone().unwrap_or_default(),
                     outcome: a.outcome.as_deref().unwrap_or(DASH).into(),
                     price: a.price.map(|p| format!("{:.4}", p)).unwrap_or_default(),
                     size: format!("{:.2}", a.size),
                     usdc_size: format_decimal(a.usdc_size),
-                    tx: truncate(&a.transaction_hash.to_string(), 14),
+                    tx: truncate(&a.transaction_hash, 14),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::rounded()).to_string();
@@ -356,22 +353,22 @@ pub fn print_activity(activity: &[Activity], output: &OutputFormat) -> anyhow::R
                 .iter()
                 .map(|a| {
                     json!({
-                        "activity_type": a.activity_type.to_string(),
+                        "activity_type": a.kind,
                         "title": a.title,
                         "slug": a.slug,
                         "icon": a.icon,
                         "event_slug": a.event_slug,
-                        "side": a.side.as_ref().map(|s| s.to_string()),
+                        "side": a.side,
                         "outcome": a.outcome,
                         "outcome_index": a.outcome_index,
                         "price": a.price.map(|p| p.to_string()),
-                        "asset": a.asset.map(|a| a.to_string()),
-                        "condition_id": a.condition_id.map(|c| c.to_string()),
+                        "asset": a.token_id,
+                        "condition_id": a.condition_id,
                         "size": a.size.to_string(),
                         "usdc_size": a.usdc_size.to_string(),
                         "timestamp": a.timestamp,
-                        "transaction_hash": a.transaction_hash.to_string(),
-                        "proxy_wallet": a.proxy_wallet.to_string(),
+                        "transaction_hash": a.transaction_hash,
+                        "proxy_wallet": a.proxy_wallet,
                         "name": a.name,
                         "pseudonym": a.pseudonym,
                         "bio": a.bio,
@@ -408,7 +405,7 @@ pub fn print_holders(meta_holders: &[MetaHolder], output: &OutputFormat) -> anyh
                 .iter()
                 .flat_map(|mh| {
                     mh.holders.iter().map(|h| Row {
-                        wallet: truncate(&h.proxy_wallet.to_string(), 14),
+                        wallet: truncate(&h.proxy_wallet, 14),
                         name: h
                             .name
                             .as_deref()
@@ -432,11 +429,11 @@ pub fn print_holders(meta_holders: &[MetaHolder], output: &OutputFormat) -> anyh
                         .iter()
                         .map(|h| {
                             json!({
-                                "proxy_wallet": h.proxy_wallet.to_string(),
+                                "proxy_wallet": h.proxy_wallet,
                                 "name": h.name,
                                 "pseudonym": h.pseudonym,
                                 "bio": h.bio,
-                                "asset": h.asset.to_string(),
+                                "asset": h.token_id,
                                 "amount": h.amount.to_string(),
                                 "outcome_index": h.outcome_index,
                                 "display_username_public": h.display_username_public,
@@ -446,7 +443,7 @@ pub fn print_holders(meta_holders: &[MetaHolder], output: &OutputFormat) -> anyh
                             })
                         })
                         .collect();
-                    json!({"token": mh.token.to_string(), "holders": holders})
+                    json!({"token": mh.token_id, "holders": holders})
                 })
                 .collect();
             super::print_json(&data)?;
@@ -472,7 +469,7 @@ pub fn print_open_interest(oi: &[OpenInterest], output: &OutputFormat) -> anyhow
             let rows: Vec<Row> = oi
                 .iter()
                 .map(|o| Row {
-                    market: format_market(&o.market),
+                    market: format_market(&o.condition_id),
                     value: format_decimal(o.value),
                 })
                 .collect();
@@ -482,7 +479,7 @@ pub fn print_open_interest(oi: &[OpenInterest], output: &OutputFormat) -> anyhow
         OutputFormat::Json => {
             let data: Vec<_> = oi
                 .iter()
-                .map(|o| json!({"market": format_market(&o.market), "value": o.value.to_string()}))
+                .map(|o| json!({"market": format_market(&o.condition_id), "value": o.value.to_string()}))
                 .collect();
             super::print_json(&data)?;
         }
@@ -490,13 +487,9 @@ pub fn print_open_interest(oi: &[OpenInterest], output: &OutputFormat) -> anyhow
     Ok(())
 }
 
-pub fn print_live_volume(volume: &[LiveVolume], output: &OutputFormat) -> anyhow::Result<()> {
+pub fn print_live_volume(v: &LiveVolume, output: &OutputFormat) -> anyhow::Result<()> {
     match output {
         OutputFormat::Table => {
-            if volume.is_empty() {
-                println!("No volume data found.");
-                return Ok(());
-            }
             #[derive(Tabled)]
             struct Row {
                 #[tabled(rename = "Market")]
@@ -504,40 +497,35 @@ pub fn print_live_volume(volume: &[LiveVolume], output: &OutputFormat) -> anyhow
                 #[tabled(rename = "Volume")]
                 value: String,
             }
-            for v in volume {
-                println!("Total: {}", format_decimal(v.total));
-                let rows: Vec<Row> = v
-                    .markets
-                    .iter()
-                    .map(|mv| Row {
-                        market: format_market(&mv.market),
-                        value: format_decimal(mv.value),
-                    })
-                    .collect();
-                let table = Table::new(rows).with(Style::rounded()).to_string();
-                println!("{table}");
-            }
-        }
-        OutputFormat::Json => {
-            let data: Vec<_> = volume
+            println!("Total: {}", format_decimal(v.taker_volume_total));
+            let rows: Vec<Row> = v
+                .conditions
                 .iter()
-                .map(|v| {
-                    let markets: Vec<_> = v
-                        .markets
-                        .iter()
-                        .map(|mv| json!({"market": format_market(&mv.market), "value": mv.value.to_string()}))
-                        .collect();
-                    json!({"total": v.total.to_string(), "markets": markets})
+                .map(|c| Row {
+                    market: format_market(&c.condition_id),
+                    value: format_decimal(c.taker_volume),
                 })
                 .collect();
-            super::print_json(&data)?;
+            let table = Table::new(rows).with(Style::rounded()).to_string();
+            println!("{table}");
+        }
+        OutputFormat::Json => {
+            let markets: Vec<_> = v
+                .conditions
+                .iter()
+                .map(|c| json!({"market": format_market(&c.condition_id), "value": c.taker_volume.to_string()}))
+                .collect();
+            // Array of one, matching the v1 output shape.
+            super::print_json(
+                &json!([{"total": v.taker_volume_total.to_string(), "markets": markets}]),
+            )?;
         }
     }
     Ok(())
 }
 
 pub fn print_leaderboard(
-    entries: &[TraderLeaderboardEntry],
+    entries: &[LeaderboardEntry],
     output: &OutputFormat,
 ) -> anyhow::Result<()> {
     match output {
@@ -563,7 +551,7 @@ pub fn print_leaderboard(
                     rank: e.rank.to_string(),
                     trader: truncate(e.user_name.as_deref().unwrap_or(DASH), 20),
                     pnl: format_decimal(e.pnl),
-                    volume: format_decimal(e.vol),
+                    volume: format_decimal(e.volume),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::rounded()).to_string();
@@ -575,13 +563,13 @@ pub fn print_leaderboard(
                 .map(|e| {
                     json!({
                         "rank": e.rank,
-                        "proxy_wallet": e.proxy_wallet.to_string(),
+                        "proxy_wallet": e.user_id,
                         "user_name": e.user_name,
                         "pnl": e.pnl.to_string(),
-                        "volume": e.vol.to_string(),
+                        "volume": e.volume.to_string(),
                         "profile_image": e.profile_image,
                         "x_username": e.x_username,
-                        "verified_badge": e.verified_badge,
+                        "verified_badge": e.verified,
                     })
                 })
                 .collect();
@@ -592,7 +580,7 @@ pub fn print_leaderboard(
 }
 
 pub fn print_builder_leaderboard(
-    entries: &[BuilderLeaderboardEntry],
+    entries: &[BuilderEntry],
     output: &OutputFormat,
 ) -> anyhow::Result<()> {
     match output {
@@ -616,7 +604,7 @@ pub fn print_builder_leaderboard(
                 .iter()
                 .map(|e| Row {
                     rank: e.rank.to_string(),
-                    builder: truncate(&e.builder, 25),
+                    builder: truncate(&e.builder_name, 25),
                     volume: format_decimal(e.volume),
                     active_users: e.active_users.to_string(),
                 })
@@ -630,11 +618,11 @@ pub fn print_builder_leaderboard(
                 .map(|e| {
                     json!({
                         "rank": e.rank,
-                        "builder": e.builder,
+                        "builder": e.builder_name,
                         "volume": e.volume.to_string(),
                         "active_users": e.active_users,
                         "verified": e.verified,
-                        "builder_logo": e.builder_logo,
+                        "builder_logo": e.profile_image,
                     })
                 })
                 .collect();
@@ -644,10 +632,7 @@ pub fn print_builder_leaderboard(
     Ok(())
 }
 
-pub fn print_builder_volume(
-    entries: &[BuilderVolumeEntry],
-    output: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn print_builder_volume(entries: &[BuilderEntry], output: &OutputFormat) -> anyhow::Result<()> {
     match output {
         OutputFormat::Table => {
             if entries.is_empty() {
@@ -670,8 +655,8 @@ pub fn print_builder_volume(
             let rows: Vec<Row> = entries
                 .iter()
                 .map(|e| Row {
-                    date: e.dt.format("%Y-%m-%d").to_string(),
-                    builder: truncate(&e.builder, 25),
+                    date: e.date.clone(),
+                    builder: truncate(&e.builder_name, 25),
                     volume: format_decimal(e.volume),
                     active_users: e.active_users.to_string(),
                     rank: e.rank.to_string(),
@@ -685,9 +670,9 @@ pub fn print_builder_volume(
                 .iter()
                 .map(|e| {
                     json!({
-                        "date": e.dt.to_rfc3339(),
-                        "builder": e.builder,
-                        "builder_logo": e.builder_logo,
+                        "date": e.date,
+                        "builder": e.builder_name,
+                        "builder_logo": e.profile_image,
                         "volume": e.volume.to_string(),
                         "active_users": e.active_users,
                         "rank": e.rank,

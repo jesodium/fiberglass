@@ -2192,6 +2192,7 @@ dependencies = [
  "polymarket_client_sdk_v2",
  "predicates",
  "ratatui",
+ "reqwest 0.13.2",
  "rust_decimal",
  "rust_decimal_macros",
  "rustyline",
