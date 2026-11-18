@@ -1,5 +1,9 @@
 # fiberglass
 
+
+> [!WARNING]
+> I'VE JUST SEEN POLYMARKETS UPDATES REGARDING PERPS AND EVERYTHING. YES, IM GOING TO ADD THEM! I MIGHT ALSO LEAVE THIS CLI DEPRECATED, IN CHANGE OF MAKING A DESKTOP APP CLIENT FOR POLYMARKET WITH MCP SUPPORT! 
+
 a ground up rewrite of the polymarket cli built for AI agent support and backtesting with paper trading. supported on all macs, windows, and linux
 
 ![fiberglass demo](docs/dashboard.gif)
