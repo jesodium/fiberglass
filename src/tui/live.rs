@@ -16,7 +16,7 @@ use std::str::FromStr;
 use crate::auth;
 use crate::commands::COLLATERAL_DECIMALS;
 use crate::config;
-use crate::dataapi::{self, MAX_PAGE};
+use crate::dataapi::{self, ALL};
 use crate::paper::types::{OrderKind, Position, Trade, TradeSide};
 
 pub(crate) use crate::trade::LiveOrder;
@@ -84,8 +84,10 @@ pub(crate) fn resolve_user_address() -> Result<Address> {
 }
 
 pub(crate) async fn fetch_positions(user: Address) -> Result<Vec<Position>> {
+    // IMPORTANT NOTE: whole book, one request per 1000 positions, and the TUI calls this
+    // every fast tick; cache between ticks if a >1000-position wallet ever lags it.
     let raw: Vec<dataapi::Position> =
-        dataapi::list("positions", vec![("user", user.to_string())], MAX_PAGE)
+        dataapi::list("positions", vec![("user", user.to_string())], ALL)
             .await
             .context("Failed to fetch positions")?;
     Ok(raw
@@ -106,9 +108,8 @@ pub(crate) async fn fetch_positions(user: Address) -> Result<Vec<Position>> {
 /// market, so the dashboard's realized-PnL stats (win rate, avg win/loss, profit
 /// factor) work in live mode — `account.trades` is otherwise never hydrated.
 pub(crate) async fn fetch_closed_trades(user: Address) -> Result<Vec<Trade>> {
-    // IMPORTANT NOTE: newest 1000 closed markets (one max page); raise if older ones matter.
     let query = vec![("user", user.to_string()), ("status", "CLOSED".into())];
-    let raw: Vec<dataapi::Position> = dataapi::list("positions", query, MAX_PAGE)
+    let raw: Vec<dataapi::Position> = dataapi::list("positions", query, ALL)
         .await
         .context("Failed to fetch closed positions")?;
     let mut trades: Vec<Trade> = raw

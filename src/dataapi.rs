@@ -14,7 +14,9 @@ use serde::de::DeserializeOwned;
 
 const BASE: &str = "https://data-api.polymarket.com/v2";
 /// Server-side cap on `limit` for every paged route.
-pub const MAX_PAGE: usize = 1000;
+const MAX_PAGE: usize = 1000;
+/// `max` for [`list`]: follow the cursor to the end of the feed.
+pub const ALL: usize = usize::MAX;
 
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 

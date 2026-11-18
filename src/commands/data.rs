@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use polymarket_client_sdk_v2::types::{Address, B256};
 
-use crate::dataapi::{self, MAX_PAGE};
+use crate::dataapi::{self, ALL};
 use crate::output::OutputFormat;
 use crate::output::data::{
     print_activity, print_builder_leaderboard, print_builder_volume, print_closed_positions,
@@ -210,9 +210,8 @@ pub async fn execute(args: DataArgs, output: OutputFormat) -> Result<()> {
         }
 
         DataCommand::Pnl { address } => {
-            // IMPORTANT NOTE: one max-size page (1000 positions); raise the cap if anyone holds more.
             let q = vec![("user", address.to_string())];
-            let positions = dataapi::list("positions", q, MAX_PAGE).await?;
+            let positions = dataapi::list("positions", q, ALL).await?;
             print_pnl_summary(&positions, &output)?;
         }
 
