@@ -14,7 +14,9 @@ name = "fiberglass"
 path = "src/main.rs"
 
 [dependencies]
-polymarket_client_sdk_v2 = { version = "0.6.0", features = ["gamma", "data", "bridge", "clob", "ctf"] }
+polymarket_client_sdk_v2 = { version = "0.6.0", features = ["gamma", "bridge", "clob", "ctf"] }
+# Data API v2 is hand-rolled (src/dataapi.rs); same reqwest the SDK already pulls in.
+reqwest = { version = "0.13", features = ["query"] }
 alloy = { version = "1.6.3", default-features = false, features = ["providers", "rpc-types", "sol-types", "contract", "reqwest", "reqwest-rustls-tls", "signer-local", "signers"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

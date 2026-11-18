@@ -15,12 +15,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
-use polymarket_client_sdk_v2::data::types::Side as DataSide;
-use polymarket_client_sdk_v2::data::types::request::ActivityRequest;
-use polymarket_client_sdk_v2::data::types::{ActivityType, response::Activity};
 use polymarket_client_sdk_v2::types::{Address, Decimal};
 
 use super::config::{CopyBook, CopyTrader};
+use crate::dataapi::{self, Activity};
 use crate::paper::engine as paper_engine;
 use crate::paper::quotes;
 use crate::paper::types::{PaperAccount, TradeSide};
@@ -77,7 +75,7 @@ pub(crate) struct LogLine {
 const MAX_LOGS: usize = 500;
 const LOG_FILE: &str = "copytrade.log";
 /// How many recent activities to pull per trader per poll.
-const ACTIVITY_LIMIT: i32 = 100;
+const ACTIVITY_LIMIT: usize = 100;
 
 /// What to do about one of the followed trader's trades.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -488,9 +486,8 @@ impl CopyEngine {
             return Ok(());
         }
 
-        let data = polymarket_client_sdk_v2::data::Client::default();
         for (id, cfg, primed, last_seen) in jobs {
-            if let Err(e) = self.poll_trader(&data, &id, &cfg, primed, last_seen).await {
+            if let Err(e) = self.poll_trader(&id, &cfg, primed, last_seen).await {
                 self.bump_error(&id);
                 self.log(LogLevel::Warn, &id, &format!("poll failed: {e}"));
             }
@@ -504,7 +501,6 @@ impl CopyEngine {
 
     async fn poll_trader(
         &self,
-        data: &polymarket_client_sdk_v2::data::Client,
         id: &str,
         cfg: &CopyTrader,
         primed: bool,
@@ -512,12 +508,9 @@ impl CopyEngine {
     ) -> Result<()> {
         let wallet = Address::from_str(cfg.wallet.trim())
             .map_err(|_| anyhow::anyhow!("Invalid wallet address: {}", cfg.wallet))?;
-        let request = ActivityRequest::builder()
-            .user(wallet)
-            .activity_types(vec![ActivityType::Trade])
-            .limit(ACTIVITY_LIMIT)?
-            .build();
-        let activities = data.activity(&request).await?;
+        // One page, newest first; cursoring further back is pointless for a 15s poll.
+        let query = vec![("user", wallet.to_string()), ("type", "TRADE".into())];
+        let activities: Vec<Activity> = dataapi::list("activity", query, ACTIVITY_LIMIT).await?;
 
         let newest = activities.iter().map(|a| a.timestamp).max();
 
@@ -791,18 +784,18 @@ fn merge_disk_roster(traders: &mut Vec<TraderState>, book: CopyBook) {
 
 /// Pull the actionable fields out of a Data-API activity, if present.
 fn to_trade_event(a: &Activity) -> Option<TradeEvent> {
-    if a.activity_type != ActivityType::Trade {
+    if a.kind != "TRADE" {
         return None;
     }
-    let token = a.asset?;
-    let side = match a.side.as_ref()? {
-        DataSide::Buy => TradeSide::Buy,
-        DataSide::Sell => TradeSide::Sell,
+    let token = a.token_id.clone()?;
+    let side = match a.side.as_deref()? {
+        "BUY" => TradeSide::Buy,
+        "SELL" => TradeSide::Sell,
         _ => return None,
     };
     let price = a.price?;
     Some(TradeEvent {
-        token_id: token.to_string(),
+        token_id: token,
         side,
         price,
         usdc_size: a.usdc_size,

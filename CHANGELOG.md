@@ -10,6 +10,15 @@ version numbers keep their original case).
 
 ## [unreleased]
 
+### fixed
+- copy-trading, the live portfolio/history views and every `data *` command
+  were dead: polymarket retired data api v1 (all paths answer `410 Gone`) and
+  the sdk still calls it. these now use data api v2 directly
+  (`src/dataapi.rs`). json output keeps its old field names, so mcp tools and
+  scripts are unaffected. `--offset` still works (emulated over v2 cursors).
+- `data trades` and the live history tab now include maker fills (v2 returns
+  taker-only by default).
+
 ## [0.1.23] - 2026-07-12
 
 ### fixed
